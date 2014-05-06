@@ -1,0 +1,192 @@
+#!/bin/sh
+#\
+exec tclsh "$0" ${1+"$@"}
+
+#
+# Snippets upgrade script
+#
+
+proc addTrailingSlash {path} {
+	if {[regexp "/$" $path]} {
+		return $path
+	} else {
+		return "$path/"
+	}
+}
+
+proc getValue {default} {
+	puts -nonewline " \[$default\]: "
+	flush stdout
+	set response [gets stdin]
+	if {$response == ""} {
+		return $default
+	} else {
+		return $response
+	}
+}
+
+proc init {} {
+	global absoluteSnippetsPath
+	global filePrefix
+	global fullTclPath
+	set absoluteSnippetsPath "/var/www/cgi-bin/snippets"
+	set filePrefix "/var/www/snippets/"
+	set fullTclPath "/usr/bin/tclsh"
+	puts -nonewline "[exec clear]"
+	puts -nonewline\
+"You are beginning the Snippets UPGRADE script.  This script will ask you a\
+\nfew questions in order to set up the script.  If you don't know an\
+\nappropriate answer to one of the questions, and don't want to use this\
+\nscript's guess, you can quit at any time and restart the script when you\
+\nknow how to answer the questions. The script will ask you all informational\
+\nquestions before making any changes.\
+\n\
+\nQuestions asked are typical of a traditional Unix/Linux interactive\
+\ninstallation script.  The installer is encouraged to have at least two\
+\nwindows open during installation: one for this script, and one to poke\
+\npoke around on the system and find appropriate answers to script questions.\
+\n\
+\nHit return to continue..."
+gets stdin
+}
+
+# Not indented, because of spacing concerns.
+proc interview {} {
+global absoluteSnippetsPath
+global filePrefix
+global fullTclPath
+
+puts -nonewline "\
+\nWhat is the full path to the Tcl executable (usually tclsh)?\
+\n\
+\nTcl path:"
+set fullTclPath [getValue $fullTclPath]
+puts -nonewline "\
+\nWhat absolute path is Snippets currently stored at? (Include the filename:\
+\n/path/snippets, not /path/.)\
+\n\
+\nAbsolute path"
+set absoluteSnippetsPath [getValue $absoluteSnippetsPath]
+puts -nonewline "\
+\nWhat absolute path--on your filesystem, not on the web--do you have public\
+\nSnippets web data stored in?\
+\n\
+\nSnippets private data directory"
+set filePrefix [getValue $filePrefix]
+puts -nonewline "\
+\nYou have selected the following options:\
+\n"
+puts -nonewline\
+"\n\tAbsolute path to script: $absoluteSnippetsPath"
+puts -nonewline\
+"\n\tFull path to Tcl: $fullTclPath"
+puts -nonewline\
+"\n\tSnippets private data directory: $filePrefix"
+puts -nonewline "\n\
+\nAre these options all correct (yes/no)"
+if {[isTrue [getValue "yes"]]} {
+return 1
+} else {
+puts -nonewline "\
+\nWould you rather change your answers or quit for now (change/quit)"
+set response [getValue change]
+if {[regexp -nocase "^c" $response]} {
+puts -nonewline "\
+\nI'll ask you the same questions again.  If you want to keep your answer the\
+\nsame, just hit enter.\
+\n"
+return [interview]
+} else {
+puts -nonewline "Bye! You can always upgrade Snippets at a later time.\n"
+exit 0
+}
+}
+}
+
+proc isTrue {optionValue} {
+	switch [string tolower $optionValue] {
+		true -
+		yes -
+		on -
+		1 {
+			return 1
+		}
+		default {
+			return 0
+		}
+	}
+}
+
+proc prefixTildeWithSlash {path} {
+	if {[regexp "^~" $path]} {
+		regsub "~" $path "/$" result
+		return $result
+	} else {
+		return $path
+	}
+}
+
+proc removeTrailingSlash {path} {
+	if {[regexp "/$" $path]} {
+		regsub "/$" $path "" result
+		return $result
+	} else {
+		return $path
+	}
+}
+
+proc standardizeResponses {} {
+	global absoluteSnippetsPath
+	global filePrefix
+	global fullTclPath
+	set absoluteSnippetsPath [removeTrailingSlash $absoluteSnippetsPath]
+	set filePrefix [addTrailingSlash $filePrefix]
+}
+
+proc substitute {filename tag value} {
+	if { [ catch { open $filename r } readId ] } {
+		puts stderr "Couldn't open file $filename for reading! Leaving\
+			untouched."
+		return
+	} else {
+		set fileContents [read $readId]
+		regsub -all $tag $fileContents $value fileContents
+		close $readId
+		if { [ catch { open $filename w } writeId ] } {
+			puts stderr "Couldn't open file $filename for writing! Leaving\
+				untouched."
+			return
+		} else {
+			puts -nonewline $writeId $fileContents
+		}
+		close $writeId
+	}
+}
+
+proc upgrade {} {
+	global absoluteSnippetsPath
+	global filePrefix
+	global fullTclPath
+	puts -nonewline "\nUpgrading...\n"
+	exec cp snippets $absoluteSnippetsPath
+	exec chmod 600 $absoluteSnippetsPath
+	substitute "$absoluteSnippetsPath" "FULL_TCL_PATH" "$fullTclPath"
+	substitute "$absoluteSnippetsPath" "CONFIG_FILENAME"\
+		"[removeTrailingSlash $filePrefix]/general/config"
+	exec chmod 755 $absoluteSnippetsPath
+	puts -nonewline \
+"\nThe upgrade is complete.  Further information about Snippets is available\
+\nin the README file.  If you'd like to know how to get the best out of\
+\nSnippets, please read it.\
+\n"
+	puts -nonewline\
+"\n\
+\nHappy snipping!\
+\n\
+\n"
+}
+
+init
+interview
+standardizeResponses
+upgrade

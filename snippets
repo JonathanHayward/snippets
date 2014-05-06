@@ -344,6 +344,12 @@ proc addUser {login password passwordDuplicate} {
 }
 
 proc authenticate {} {
+	if {([CGIValue pageMode] == "forgotPassword")} {
+		pageStart 0
+		forgotPassword
+		pageEnd
+		exit 0
+	}
 	if {[authenticateInternal [CGIValue login] [CGIValue password]]} {
 		return 1
 	}
@@ -355,6 +361,7 @@ proc authenticate {} {
 
 proc authenticateInternal {login password} {
 	global passwords
+	global userNotifiedOfLock
 	readPasswords
 	set index 0
 	set shouldContinue 1
@@ -372,6 +379,17 @@ proc authenticateInternal {login password} {
 				if {![testUserFlag $login "locked"]} {
 					return 1
 				} else {
+					if {!($userNotifiedOfLock)} {
+						set userNotifiedOfLock 1
+						puts -nonewline "<h1>This account has been\
+							locked.</h1>\
+							\n\
+							\n<p><strong>Please <a\
+							href=\"mailto:[getServerAdminEmail]\">contact the\
+							administrator</a> if you are unsure why this\
+							account may be locked.</strong></p>\
+							\n<hr>\n"
+					}
 					return 0
 				}
 			}
@@ -608,6 +626,14 @@ proc deleteUser {userId} {
 	releaseLock [getPasswordFilename]
 }
 
+proc deregisterLock {filename} {
+	global lockedFiles
+	while {[lsearch -exact $lockedFiles $filename] != -1} {
+		set index [lsearch -exact $lockedFiles $filename]
+		set lockedFiles [lreplace $lockedFiles $index $index]
+	}
+}
+
 proc displayCreateLogin {} {
 	puts -nonewline "<p>E-mail address:<br>\n\
 		<input type=\"text\" name=\"newLogin\"\
@@ -776,7 +802,7 @@ proc forgotPassword {} {
 		account:</p>\n\
 		<p><input type=\"text\" name=\"login\" size=\"[getTextWidth]\"></p>\n\
 		<p><input type=\"image\" name=\"E-mail me my password\"\ border=\"0\"
-		src=\"email_me_my_password.jpg\"></p>\n"
+		src=\"[getDocumentURL]/email_me_my_password.jpg\"></p>\n"
 		#<p><input type=\"submit\" value=\"E-mail me my password\"></p>\n"
 }
 
@@ -875,6 +901,7 @@ proc getLock {filename} {
 					} else {
 						close $fileId
 					}
+					registerLock $filename
 					return
 				}
 			} else {
@@ -884,6 +911,7 @@ proc getLock {filename} {
 				} else {
 					close $fileId
 				}
+				registerLock $filename
 				return
 			}
 		}
@@ -894,6 +922,7 @@ proc getLock {filename} {
 		} else {
 			close $fileId
 		}
+		registerLock $filename
 		return
 	}
 }
@@ -941,6 +970,7 @@ proc getPageMode {} {
 		"administrative" -
 		"connect" -
 		"createLogin" -
+		"forgotPassword" -
 		"retrievePassword" {
 			set pageModeResult $rawMode
 			return $rawMode
@@ -1200,20 +1230,24 @@ proc init {} {
 	global administrativeActionResult
 	global configOptions
 	global debugMode
+	global lockedFiles
 	global metaDataRead
 	global pageModeHasBeenCalled
 	global passwordsRead
 	global resultArray
+	global userNotifiedOfLock
 	#One of the following two lines should be uncommented.
-	#set debugMode 1
-	set debugMode 0
+	set debugMode 1
+	#set debugMode 0
 	debugLog "Starting processing..."
 	puts "Content-type: text/html"
 	puts ""
 	set administrativeActionResult ""
 	set metaDataRead 0
+	set lockedFiles {}
 	set pageModeHasBeenCalled 0
 	set passwordsRead 0
+	set userNotifiedOfLock 0
 	set configOptions {\
 		"actionURL"\
 		"defaultAccessMethod"\
@@ -1475,7 +1509,7 @@ proc moveDown {id} {
 	global metaData
 	for {set i 0} {$i < [expr [getNumberOfTopics] - 1]} {incr i} {
 		array set current [lindex $metaData $i]
-		If {$current(identifier) == $id} {
+		if {$current(identifier) == $id} {
 			set juggle [lindex $metaData [expr $i + 1]]
 			set metaData [lreplace $metaData [expr $i + 1] \
 				[expr $i + 1] [lindex $metaData $i]]
@@ -1542,7 +1576,11 @@ proc pageStart {{preserveLogin 1}} {
 }
 
 proc panic {} {
-	puts "Panicking..."
+	global lockedFiles
+	while {[llength $lockedFiles] > 0} {
+		releaseLock [lindex $lockedFiles 0]
+	}
+	puts "<h1>Panicking... (Sorry!)</h1>"
 	pageEnd
 	exit 1
 }
@@ -1869,7 +1907,15 @@ proc readTopic {filename} {
 	return $result
 }
 
+proc registerLock {filename} {
+	global lockedFiles
+	if {[lsearch -exact $lockedFiles $filename] == -1} {
+		lappend lockedFiles $filename
+	}
+}
+
 proc releaseLock {filename} {
+	deregisterLock $filename
 	file delete "$filename.lock"
 }
 
@@ -1895,9 +1941,12 @@ proc retrievePassword {} {
 				\nTo: $login\
 				\nSubject: Your Snippets password\
 				\n\nDear Snippets Visitor;\
-				\n\nYour snippets password at [getFullBaseURL]\
+				\n\nYour Snippets password at [getFullBaseURL]\
 				\nis \"$password\".  (Your login is the e-mail address you\
 				used, \n\"$login\".)  We look forward to having you back.\
+				\n\
+				\nIf you were not expecting a password reminder, please\
+				disregard this message.\n\
 				\n\
 				\n\
 				\nSincerely (for a computer program),\
@@ -2619,6 +2668,9 @@ switch -exact [getPageMode] {
 		if {[isAdministrator [getUserName]]} {
 			listUsers
 		}
+	}
+	"forgotPassword" {
+		forgotPassword
 	}
 	"snippets" {
 		if {[authenticate]} {

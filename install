@@ -3,7 +3,7 @@
 exec tclsh "$0" ${1+"$@"}
 
 #
-# Snippets install script.
+# Snippets install script
 #
 
 proc addTrailingSlash {path} {
@@ -11,6 +11,21 @@ proc addTrailingSlash {path} {
 		return $path
 	} else {
 		return "$path/"
+	}
+}
+
+proc checkInstallVsUpgrade {} {
+	puts -nonewline\
+"NOTE: This script is intended to install Snippets on a computer for the first\
+\ntime. If you want to upgrade an existing installation, QUIT THIS SCRIPT and\
+\nrun \"./upgrade\".\
+\n\
+\nContinue (yes/no) ('no' to quit this script)"
+	if {(![regexp "^y" [getValue "yes"]])} {
+		puts "Bye!"
+		exit 0
+	} else {
+		puts -nonewline "[exec clear]"
 	}
 }
 
@@ -51,8 +66,9 @@ proc init {} {
 	set shouldAllowLoginCreation "yes"
 	set shouldAllowWikiAccess "yes"
 	puts -nonewline "[exec clear]"
+	checkInstallVsUpgrade
 	puts -nonewline\
-"You are beginning the Snippets installation script.  This script will ask\
+"You are beginning the Snippets INSTALL script.  This script will ask\
 \nyou around a dozen questions in order to help customize the script and\
 \nplace associated files in the right place.  If you don't know an appropriate\
 \nanswer to one of the questions, and don't want to use this script's guess,\
@@ -82,7 +98,7 @@ proc install {} {
 	global shouldAllowLoginAccess
 	global shouldAllowLoginCreation
 	global shouldAllowWikiAccess
-	puts "Installing..."
+	puts "\nInstalling..."
 	exec cp snippets $absoluteSnippetsPath
 	exec chmod 600 $absoluteSnippetsPath
 	substitute "$absoluteSnippetsPath" "FULL_TCL_PATH" "$fullTclPath"
@@ -144,9 +160,8 @@ proc install {} {
 	substitute "[removeTrailingSlash $filePrefix]/general/footer"\
 		"FULL_BASE_URL" "$fullBaseURL"
 	exec chmod 755 $absoluteSnippetsPath
-	puts -nonewline \
-"\n\
-\nInstallation is complete.  Further information about Snippets is available\
+	puts -nonewline\
+"\nInstallation is complete.  Further information about Snippets is available\
 \nin the README file.  If you'd like to know how to get the best out of\
 \nSnippets, please read it.\
 \n\
@@ -211,11 +226,15 @@ puts -nonewline "\
 \n\
 \nSnippets public HTML directory"
 set absoluteSnippetsDocumentRoot [getValue $absoluteSnippetsDocumentRoot]
-if {[regexp "htdocs/" $absoluteSnippetsDocumentRoot]} {
-regsub "htdocs/" $absoluteSnippetsDocumentRoot "" filePrefix
+set filePrefix $absoluteSnippetsDocumentRoot
+if {[regexp "htdocs/" $filePrefix]} {
+regsub "htdocs/" $filePrefix "" filePrefix
 }
-if {[regexp "public_html/" $absoluteSnippetsDocumentRoot]} {
-regsub "public_html/" $absoluteSnippetsDocumentRoot "" filePrefix
+if {[regexp "public_html/" $filePrefix]} {
+regsub "public_html/" $filePrefix "" filePrefix
+}
+if {[regexp "html/" $filePrefix]} {
+regsub "html/" $filePrefix "" filePrefix
 }
 puts -nonewline "\
 \nWhat absolute path--on your filesystem, not on the web--do you want private\
