@@ -1,0 +1,385 @@
+#!/bin/sh
+#\
+exec tclsh "$0" ${1+"$@"}
+
+#
+# Snippets install script.
+#
+
+proc addTrailingSlash {path} {
+	if {[regexp "/$" $path]} {
+		return $path
+	} else {
+		return "$path/"
+	}
+}
+
+proc getValue {default} {
+	puts -nonewline " \[$default\]: "
+	flush stdout
+	set response [gets stdin]
+	if {$response == ""} {
+		return $default
+	} else {
+		return $response
+	}
+}
+
+proc init {} {
+	global absoluteSnippetsDocumentRoot
+	global absoluteSnippetsPath
+	global actionURL
+	global documentURL
+	global filePrefix
+	global fullBaseURL
+	global fullTclPath
+	global serverAdminEmail
+	global shouldAllowGuestAccess
+	global shouldAllowLoginAccess
+	global shouldAllowLoginCreation
+	global shouldAllowWikiAccess
+	set absoluteSnippetsDocumentRoot "/var/www/htdocs/snippets/"
+	set absoluteSnippetsPath "/var/www/cgi-bin/snippets"
+	set actionURL "/cgi-bin/snippets"
+	set documentURL "/snippets/"
+	set filePrefix "/var/www/snippets/"
+	set fullBaseURL "http://example.com/cgi-bin/snippets"
+	set fullTclPath "/usr/bin/tclsh"
+	set serverAdminEmail "webmaster@example.com"
+	set shouldAllowGuestAccess "yes"
+	set shouldAllowLoginAccess "yes"
+	set shouldAllowLoginCreation "yes"
+	set shouldAllowWikiAccess "yes"
+	puts -nonewline "[exec clear]"
+	puts -nonewline\
+"You are beginning the Snippets installation script.  This script will ask\
+\nyou around a dozen questions in order to help customize the script and\
+\nplace associated files in the right place.  If you don't know an appropriate\
+\nanswer to one of the questions, and don't want to use this script's guess,\
+\nyou can quit at any time and restart the script when you know how to answer\
+\nthe questions. The script will ask you all informational questions before\
+\nmaking any changes.\
+\n\
+\nQuestions asked are typical of a traditional Unix/Linux interactive\
+\ninstallation script.  The installer is encouraged to have at least two\
+\nwindows open during installation: one for this script, and one to poke\
+\npoke around on the system and find appropriate answers to script questions.\
+\n\
+\nHit return to continue..."
+gets stdin
+}
+
+proc install {} {
+	global absoluteSnippetsDocumentRoot
+	global absoluteSnippetsPath
+	global actionURL
+	global documentURL
+	global filePrefix
+	global fullBaseURL
+	global fullTclPath
+	global serverAdminEmail
+	global shouldAllowGuestAccess
+	global shouldAllowLoginAccess
+	global shouldAllowLoginCreation
+	global shouldAllowWikiAccess
+	puts "Installing..."
+	exec cp snippets $absoluteSnippetsPath
+	exec chmod 600 $absoluteSnippetsPath
+	substitute "$absoluteSnippetsPath" "FULL_TCL_PATH" "$fullTclPath"
+	exec rm -rf $filePrefix
+	exec cp -r data $filePrefix
+	exec chmod -R 777 $filePrefix
+	exec rm -rf $absoluteSnippetsDocumentRoot
+	exec cp -r htdocs $absoluteSnippetsDocumentRoot
+	exec cp -r administrator_home\
+		"$filePrefix/users/$serverAdminEmail"
+	exec chmod -R 777 "$filePrefix/users/$serverAdminEmail"
+	set administratorPassword "change_me_[expr [clock clicks] % 1000]"
+	set filename "$filePrefix/general/access"
+	if { [ catch { open $filename a } appendId ] } {
+		puts stderr "Couldn't open file $filename for append! You don't have\
+			\nan administrative account in Snippets; you might try\
+			\nreinstalling."
+	} else {
+		puts $appendId "\"$serverAdminEmail\" \"$administratorPassword\"\
+			\"administrator\" \"\""
+		close $appendId
+	}
+	substitute "$absoluteSnippetsPath" "CONFIG_FILENAME"\
+		"[removeTrailingSlash $filePrefix]/general/config"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"DOCUMENT_URL" "$documentURL"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"ACTION_URL" "$actionURL"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"FILE_PREFIX" "$filePrefix"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"FULL_BASE_URL" "$fullBaseURL"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"SERVER_ADMIN_EMAIL" "$serverAdminEmail"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"SHOULD_ALLOW_GUEST_ACCESS" "$shouldAllowGuestAccess"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"SHOULD_ALLOW_LOGIN_ACCESS" "$shouldAllowLoginAccess"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"SHOULD_ALLOW_LOGIN_CREATION" "$shouldAllowLoginCreation"
+	substitute "[removeTrailingSlash $filePrefix]/general/config"\
+		"SHOULD_ALLOW_WIKI_ACCESS" "$shouldAllowWikiAccess"
+	substitute "[removeTrailingSlash $filePrefix]/general/header"\
+		"DOCUMENT_URL" "[removeTrailingSlash $documentURL]"
+	substitute\
+		"[removeTrailingSlash $absoluteSnippetsDocumentRoot]/privacy.html"\
+		"SERVER_ADMIN_EMAIL" "$serverAdminEmail"
+	substitute\
+		"[removeTrailingSlash $absoluteSnippetsDocumentRoot]/privacy.html"\
+		"DOCUMENT_URL" "[removeTrailingSlash $documentURL]"
+	substitute "README" "<the public snippets HTML directory>"\
+		"[removeTrailingSlash $absoluteSnippetsDocumentRoot]"
+	substitute "README" "<the private snippets data directory>"\
+		"[removeTrailingSlash $filePrefix]"
+	substitute "README" "<the server administrator e-mail you specify>"\
+		"$serverAdminEmail"
+	substitute "README" "<the password generated by the install script>"\
+		"$administratorPassword"
+	substitute "[removeTrailingSlash $filePrefix]/general/footer"\
+		"FULL_BASE_URL" "$fullBaseURL"
+	exec chmod 755 $absoluteSnippetsPath
+	puts -nonewline \
+"\n\
+\nInstallation is complete.  Further information about Snippets is available\
+\nin the README file.  If you'd like to know how to get the best out of\
+\nSnippets, please read it.\
+\n\
+\nAn administrative account has been created, with e-mail address\
+\n$serverAdminEmail and password $administratorPassword.  You are encouraged\
+\nto change this password as soon as possible.\
+\n\
+\nHappy snipping!\
+\n\
+\n"
+}
+
+# Not indented, because of spacing concerns.
+proc interview {} {
+global absoluteSnippetsDocumentRoot
+global absoluteSnippetsPath
+global actionURL
+global documentURL
+global filePrefix
+global fullBaseURL
+global fullTclPath
+global serverAdminEmail
+global shouldAllowGuestAccess
+global shouldAllowLoginAccess
+global shouldAllowLoginCreation
+global shouldAllowWikiAccess
+
+puts -nonewline "\
+\nWhat is the full path to the Tcl executable (usually tclsh)?\
+\n\
+\nTcl path:"
+set fullTclPath [getValue $fullTclPath]
+puts -nonewline "\
+\nWhat relative URL do you want the Snippets script to have? Suggested\
+\nvalues are \"/cgi-bin/snippets\", if it's installed in the CGI directory,\
+\nor \"~user/snippets.cgi\", if you are a private user installing it in his\
+\nhome directory.  It is possible to give an absolute URL like\
+\n\"http://yourdomain.com/cgi-bin/snippets\", but this will make the program\
+\nunnecessarily slow.\
+\n\
+\nRelative URL"
+set actionURL [getValue $actionURL]
+puts -nonewline "\
+\nWhat absolute path should Snippets be at, in order to be visible on-web at\
+\nthat path? (Include the filename: /path/snippets, not /path/.)\
+\n\
+\nAbsolute path"
+set absoluteSnippetsPath [getValue $absoluteSnippetsPath]
+puts -nonewline "\
+\nWhat relative URL do you want Snippets-related public documents to have?\
+\nThese include the Snippets privacy policy and any Snippets-related materials\
+\nyou may wish to display.\
+\n\
+\nDocument URL"
+set documentURL [getValue $documentURL]
+puts -nonewline "\
+\nWhat absolute path--on your filesystem, not on the web--do you want public\
+\nSnippets web documents to be stored in?\
+\n\
+\n** WARNING: If you have anything at that location before Snippets is **\
+\n** installed, it will be deleted.                                    **\
+\n\
+\nSnippets public HTML directory"
+set absoluteSnippetsDocumentRoot [getValue $absoluteSnippetsDocumentRoot]
+if {[regexp "htdocs/" $absoluteSnippetsDocumentRoot]} {
+regsub "htdocs/" $absoluteSnippetsDocumentRoot "" filePrefix
+}
+if {[regexp "public_html/" $absoluteSnippetsDocumentRoot]} {
+regsub "public_html/" $absoluteSnippetsDocumentRoot "" filePrefix
+}
+puts -nonewline "\
+\nWhat absolute path--on your filesystem, not on the web--do you want private\
+\nSnippets data to be stored in?\
+\n\
+\n** WARNING: If you have anything at that location before Snippets is **\
+\n** installed, it will be deleted.                                    **\
+\n\
+\nSnippets private data directory"
+set filePrefix [getValue $filePrefix]
+puts -nonewline "\
+\nWhat is the full, publicly stated URL for your Snippets script?\
+\n\
+\nFull base URL"
+set fullBaseURL [getValue $fullBaseURL]
+puts -nonewline "\
+\nWhat is the Snippets administrator's publicly advertised e-mail address?\
+\n\
+\nAdministrator e-mail"
+set serverAdminEmail [getValue $serverAdminEmail]
+puts -nonewline "\
+\nThere are several ways of accessing Snippets: as a guest who can look but\
+\nnot touch; in wiki mode, where there is a public playground where people\
+\ncan make changes and see each others' changes; in login mode, where people\
+\ncan log in and work in their own private zones.  At least one of these means\
+\nof access should be enabled; it is your judgment call which of these you\
+\nwant to allow.\
+\n\
+\nEnable guest access (yes/no)"
+set shouldAllowGuestAccess [getValue $shouldAllowGuestAccess]
+puts -nonewline "\
+\nEnable wiki access (yes/no)"
+set shouldAllowWikiAccess [getValue $shouldAllowWikiAccess]
+puts -nonewline "\
+\nEnable login access (yes/no)"
+set shouldAllowLoginAccess [getValue $shouldAllowLoginAccess]
+if [isTrue $shouldAllowLoginAccess] {
+puts -nonewline "\
+\nIf you allow logins, there is another choice.  Either you can allow\
+\nany visitor to create a login (which is appropriate if you are making this\
+\nan attraction to a public site) or else you can create all logins yourself\
+\n(which is appropriate if you want to make this a private service open to a\
+\nfew people).\
+\n\
+\nAllow visitors to create logins (yes/no)"
+set shouldAllowLoginCreation [getValue $shouldAllowLoginCreation]
+} else {
+set shouldAllowLoginCreation false
+}
+puts -nonewline "\
+\nYou have selected the following options:\
+\n\
+\n\tRelative script URL: $actionURL\
+\n\tAbsolute path to script: $absoluteSnippetsPath\
+\n\tAbsolute path to Snippets public HTML directory:\
+\n\t\t$absoluteSnippetsDocumentRoot\
+\n\tSnippets-related document URL: $documentURL\
+\n\tSnippets private data directory: $filePrefix\
+\n\tFull base URL: $fullBaseURL\
+\n\tFull path to Tcl: $fullTclPath\
+\n\tAdministrator E-mail: $serverAdminEmail\
+\n\tEnable guest access: $shouldAllowGuestAccess\
+\n\tEnable wiki access: $shouldAllowWikiAccess\
+\n\tEnable login access: $shouldAllowLoginAccess"
+if {[isTrue $shouldAllowLoginAccess]} {
+puts -nonewline \
+"\n\tEnable login creation: $shouldAllowLoginCreation"
+}
+puts -nonewline "\n\
+\nAre these options all correct (yes/no)"
+if {[isTrue [getValue "yes"]]} {
+return 1
+} else {
+puts -nonewline "\
+\nWould you rather change your answers or quit for now (change/quit)"
+set response [getValue change]
+if {[regexp -nocase "^c" $response]} {
+puts -nonewline "\
+\nI'll ask you the same questions again.  If you want to keep your answer the\
+\nsame, just hit enter.\
+\n"
+return [interview]
+} else {
+puts -nonewline "Bye! You can always install Snippets at a later time.\n"
+exit 0
+}
+}
+}
+
+proc isTrue {optionValue} {
+	switch [string tolower $optionValue] {
+		true -
+		yes -
+		on -
+		1 {
+			return 1
+		}
+		default {
+			return 0
+		}
+	}
+}
+
+proc prefixTildeWithSlash {path} {
+	if {[regexp "^~" $path]} {
+		regsub "~" $path "/$" result
+		return $result
+	} else {
+		return $path
+	}
+}
+
+proc removeTrailingSlash {path} {
+	if {[regexp "/$" $path]} {
+		regsub "/$" $path "" result
+		return $result
+	} else {
+		return $path
+	}
+}
+
+proc standardizeResponses {} {
+	global absoluteSnippetsDocumentRoot
+	global absoluteSnippetsPath
+	global actionURL
+	global documentURL
+	global filePrefix
+	global fullBaseURL
+	global fullTclPath
+	global serverAdminEmail
+	global shouldAllowGuestAccess
+	global shouldAllowLoginAccess
+	global shouldAllowLoginCreation
+	global shouldAllowWikiAccess
+	set absoluteSnippetsPath [removeTrailingSlash $absoluteSnippetsPath]
+	set actionURL [removeTrailingSlash $actionURL]
+	set actionURL [prefixTildeWithSlash $actionURL]
+	set documentURL [addTrailingSlash $documentURL]
+	set actionURL [prefixTildeWithSlash $actionURL]
+	set filePrefix [addTrailingSlash $filePrefix]
+	set fullBaseURL [removeTrailingSlash $fullBaseURL]
+}
+
+proc substitute {filename tag value} {
+	if { [ catch { open $filename r } readId ] } {
+		puts stderr "Couldn't open file $filename for reading! Leaving\
+			untouched."
+		return
+	} else {
+		set fileContents [read $readId]
+		regsub -all $tag $fileContents $value fileContents
+		close $readId
+		if { [ catch { open $filename w } writeId ] } {
+			puts stderr "Couldn't open file $filename for writing! Leaving\
+				untouched."
+			return
+		} else {
+			puts -nonewline $writeId $fileContents
+		}
+		close $writeId
+	}
+}
+
+init
+interview
+standardizeResponses
+install

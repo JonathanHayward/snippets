@@ -1,0 +1,127 @@
+#
+# Configuration file for Jonathan Hayward's Snippets, current release available
+# from http://JonathansCorner.com/etc/snippets.
+#
+# Syntax for this file is a variabt on Unix standard configuration files.
+# A '#' begins a comment; a line that gives a setting may exhibit one of the
+# following syntaxes:
+#
+# name value
+# name "value"
+# 
+# If a comment contains a space, it may be quoted as follows:
+#
+# name "one two"
+#
+# Quotation marks inside the value may be quoted by backslashes:
+#
+# name "one \"two three\""
+# 
+
+#
+# Configuration file data:
+#
+
+#
+# The URL of the program.  Both an absolute URL such as
+# "http://yourhost.com/cgi-bin/snippets" and a relative URL like
+# "/cgi-bin/snippets" will work; the relative URL will load more quickly and is
+# therefore suggested.
+#
+actionURL ACTION_URL
+
+#
+# What method, by default, will be selected for the user as the welcome page
+# default.  This may be "guest", "login", or "wiki", and must be a permitted
+# means of access.  A non-permitted value will be ignored.
+#
+defaultAccessMethod guest
+
+#
+# What method, by default, to display.  This may be:
+#	html: treats snippets as HTML and allows them to pass through unmodified.
+#	text: converts snippets to display essentially as text.  This option
+#		disables all HTML features I'm aware of (links, images, etc.)
+#	mixed: displays as HTML, but formats reasonably.  Under html, everything in
+#		a snippet will appear as one big paragraph, even if separated by a
+#		blank line.  In mixed mode, blank lines separate.
+#	The default is "mixed".
+#
+defaultDisplayMethod mixed
+
+#
+# The base URL for documents referenced from its pages.  You should put a
+# privacy policy there, by the filename "privacy.html".
+#
+documentURL DOCUMENT_URL
+
+#
+# The beginning of the filesystem's pathname to the data area.  This is where
+# Snippets internal documents--such as quote files--are stored.
+#
+filePrefix FILE_PREFIX
+
+#
+# The full URL of the program.  This should be an absolute URL such as
+# "http://yourhost.com/cgi-bin/snippets"
+#
+fullBaseURL FULL_BASE_URL
+
+#
+# How long a file lock can exist before it is ignored.  A lower value will
+# bring faster response if a file is left locked; a higher value will lessen
+# the odds of files being corrupted because a legitimate lock was overlooked.
+#
+lockTimeout 15
+
+#
+# The command that is used to e-mail a forgotten password for the visitor.
+# "LOGIN" will be replaced by the user's e-mail address, and should be included
+# where you want the computer to substitute the user's e-mail address.
+#
+mailerCommand "/usr/sbin/sendmail LOGIN"
+
+#
+# The e-mail address of the server administrator.
+#
+serverAdminEmail SERVER_ADMIN_EMAIL
+
+#
+# Whether guest access should be allowed.  Set to "yes" to allow guest access,
+# "no" to deny.
+#
+shouldAllowGuestAccess SHOULD_ALLOW_GUEST_ACCESS
+
+#
+# Whether any HTML should be allowed.  If this value is set to "no", no
+# HTML will be displayed--only text.  If it is set to "yes", HTML access may
+# be turned on or off for individual accounts, and for guest and wiki access.
+#
+shouldAllowHtmlSnippets yes
+
+#
+# Whether login access should be allowed.  Set to "yes" to allow login access,
+# "no" to deny.
+#
+shouldAllowLoginAccess SHOULD_ALLOW_LOGIN_ACCESS
+
+#
+# Whether to allow visitors to create their own logins, if login access is
+# enabled.  Set to "yes" to allow login creation, "no" to deny.  If you
+# wish to allow restricted access to a private base of users, allow login
+# access but not login creation, and then create accounts from the
+# administrator's menu.
+#
+shouldAllowLoginCreation SHOULD_ALLOW_LOGIN_CREATION
+
+#
+# Whether wiki access should be allowed.  Set to "yes" to allow login access,
+# "no" to deny.
+#
+shouldAllowWikiAccess SHOULD_ALLOW_WIKI_ACCESS
+
+#
+# How many columns wide text-related inputs are.  You should set this value
+# so that it will not cause horizontal scrolling on an 800x600 monitor.
+#
+textWidth 40

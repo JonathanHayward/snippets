@@ -1,0 +1,2722 @@
+#!FULL_TCL_PATH
+
+#
+# I'd like to thank the following people for helping me debug or otherwise
+# get this program in working order:
+#	Waidelich Burkhard
+#	Stuart Cassoff, who furnished the configuration file code
+#	Bruce Hartweg
+#	Jeff Hobbs
+#	Cameron Laird.
+#
+#	Mike Doyle, for introducing me to Tcl and giving me several good Tcl
+#	books to start hacking with.
+#
+#	and various other people from comp.lang.Tcl whose names I didn't get down.
+#
+# Thanks also to Kapocs Web Design, kapocs.hypermart.net, for providing
+# attractive backgrounds for free download--including the one I used.
+#
+
+set configFilename "CONFIG_FILENAME"
+
+#
+# Utility routines.  Many of these have been provided by other programmers.
+#
+
+proc CGIKeys {} {
+	set scratch [CGIList]
+	set toggle 1
+	foreach entry $scratch {
+		if {$toggle} {
+			lappend result $entry
+			set toggle 0
+		} else {
+			set toggle 1
+		}
+	}
+	return $result
+}
+
+#Cosmetically adapted from Brent B. Welch, _Practical Programming in Tcl and
+#Tk_
+proc CGIList {} {
+	set query [CGIQuery]
+	regsub -all {\+} $query { } query
+	set result {}
+	foreach {x} [split $query &=] {
+		lappend result [URLDecode $x]
+	}
+	return $result
+}
+
+#Cosmetically adapted from Brent B. Welch, _Practical Programming in Tcl and
+#Tk_
+proc CGIParse {} {
+	global cgi cgilist
+	catch {unset cgi cgilist}
+	set query [CGIQuery]
+	regsub -all {\+} $query { } query
+	foreach {name value} [split $query &=] {
+		set name [URLDecode $name]
+		if {[info exists cgilist($name)] &&
+				($cgilist($name) == 1)} {
+			set cgi($name) [list $cgi($name) \
+				[URLDecode $value]]
+		} elseif {[info exists cgi($name)]} {
+			lappend cgi($name) [URLDecode $value]
+		} else {
+			set cgi($name) [URLDecode $value]
+			set cgilist($name) 0
+		}
+		incr cgilist($name)
+	}
+	return [array names cgi]
+}
+
+#Adapted from Brent B. Welch, _Practical Programming in Tcl and Tk_
+proc CGIValue {key} {
+	global cgi
+	if {[info exists cgi($key)]} {
+		if {[mightBeUsedInFilename $key]} {
+			return [sanitizePotentialFilenameElement $cgi($key)]
+		} else {
+			return $cgi($key)
+		}
+	} else {
+		return {}
+	}
+}
+
+#Cosmetically adapted from Brent B. Welch, _Practical Programming in Tcl and
+#Tk_
+proc CGILength {key} {
+	global cgilist
+	if {[info exist cgilist($key)]} {
+		return $cgilist($key)
+	} else {
+		return 0
+	}
+}
+
+#Cosmetically adapted from Brent B. Welch, _Practical Programming in Tcl and
+#Tk_
+proc CGIQuery {} {
+	global env
+	if {![info exists env(QUERY_STRING)] ||
+			[string length $env(QUERY_STRING)] == 0} {
+		if {[info exists env(CONTENT_LENGTH)] &&
+				[string length $env(CONTENT_LENGTH)] != 0} {
+			set query [read stdin $env(CONTENT_LENGTH)]
+		} else {
+			gets stdin query
+		}
+		set env(QUERY_STRING) $query
+		set env(CONTENT_LENGTH) 0
+	}
+	return $env(QUERY_STRING)
+}
+
+#Cosmetically adapted from Brent B. Welch, _Practical Programming in Tcl and
+#Tk_
+proc URLDecode {url} {
+	regsub -all {\+} $url { } url
+	regsub -all {%([[:xdigit:]]{2})} $url \
+		{[format %c 0x\1]} url
+	return [subst $url]
+}
+
+#Slightly adapted from procedures e-mailed by Stuart Cassoff.
+proc loadConfigFile {cfg_file} {
+	 global configOptions configResult
+	 #debugLog "lcf1"
+     if {[catch {set f [open $cfg_file r]}]} {
+	return 0
+     }
+     set buf {}
+     set bad_buf {0}
+     set keep_reading {1}
+     set ok {0}
+     while {1} {
+	# Read in a chunk of data if there is any more to read
+	if {$keep_reading} {
+	    # Try to read more data into buf
+	    if {[eof $f] || [catch {append buf [read $f 130]}]} {
+		# Problem or eof
+		# Stop reading, work with whatever we have
+		set keep_reading 0
+		# No reason to keep the file open at this point
+		catch {close $f}
+	    }
+	}
+	# How much data in buffer?
+	set buf_len [string length $buf]
+	# Done if no data
+	if {$buf_len == 0} {
+	    break
+	}
+	# Find newline
+	set nl_pos [string first "\n" $buf]
+	# No newline in buffer
+	if {$nl_pos == -1} {
+		# Following zero, one, infinity rule, I (Jonathan, Snippets) am turning 
+		# this off.
+		set limitBufferLength 0
+	    # Limit buffer size
+	    # No newlines at this point means line too long
+	    # or not proper config file.
+	    # This will prevent using all memory
+	    # if fed a gigantic file
+	    if {($buf_len > 250) && ($limitBufferLength)} {
+		# Clear buffer
+		set buf {}
+		incr bad_buf
+		if {$bad_buf > 2} {
+		    # 3 strikes yer out!
+		    # At this point it is probably safe to
+		    # assume that this is not a proper config file
+		    set ok 0
+		    break
+		}
+	    }
+	    # Maybe newline coming soon if there is
+	    # still more data to read
+	    if {$keep_reading} {
+		continue
+	    }
+	    # Hit eof or problem,
+	    # buf has data but no newline
+	    # Add newline and adjust nl_pos
+	    append buf "\n"
+	    set nl_pos [incr buf_len]
+	}
+	# Get line, discard (skip over) newline
+	# Get trim(line) from buffer
+	incr nl_pos -1
+	set line [string trim [string range $buf 0 $nl_pos]]
+	# Remove line from buffer
+	incr nl_pos 2
+	set buf [string range $buf $nl_pos end]
+	# Skip empty or comment lines
+	if {[string length $line] == 0 || [string equal [string index $line 0] "\#"]} {
+	    continue
+	}
+	# Does this correspond to a valid option?
+	set opt_name [lindex $line 0]
+	 #debugLog "lcf2 $opt_name [lindex $line 1]"
+	set opt_pos [lsearch -exact $configOptions $opt_name]
+	if {$opt_pos == -1} {
+	    continue
+	}
+	# Set option
+	 #debugLog "lcf3 $opt_name [lindex $line 1]"
+	set configResult($opt_name) [lindex $line 1]
+	set ok 1
+     }
+     # May have already closed file
+     if {$keep_reading} {
+	catch {close $f}
+     }
+     return $ok
+}
+
+#Slightly adapted from procedures e-mailed by Stuart Cassoff.
+#Not kept up to date with changes to other variable.
+proc saveConfigFile {cfg_file cfg_arr {head {}} {foot {}}} {
+	 global configOptions
+     upvar \#0 $cfg_arr ca
+     append cfg_data $head
+     foreach opt $configOptions {
+	append cfg_data [list $opt $ca($opt)] "\n"
+     }
+     append cfg_data $foot
+     if {[catch {
+	set f [open $cfg_file w]
+	puts $f $cfg_data
+	flush $f
+	close $f
+     } err]} {
+	catch {close $f}
+	return 0
+     }
+     return 1
+}
+
+#
+# The routines below, and the main body, are more specific to Snippets.
+#
+
+proc accessError {} {
+	puts -nonewline "<p>There's been an error.  The program that's making\n\
+		these pages thinks you're trying to use it differently from how it's\n\
+		set up.  You might tell the administrator what you were trying to\n\
+		do, so that it can be fixed.</p>\n\
+		\n\
+		<p>Sorry!</p>\n"
+	pageEnd
+	# If I set an exit status of one, will that generate an internal server
+	# error?
+	exit 0
+}
+
+proc addTemplates {} {
+	global metaData
+	if {[CGIValue shouldAddTemplates] == "yes"} {
+		getLock [getMetaDataFilename]
+		readMetaData 1
+		set previous [CGIValue previousPageMode]
+		foreach key [CGIKeys] {
+			switch -regexp $key {
+				{^importtemplate_(.*)$} {
+					regexp {^(.*?)_(.*)$} $key match prefix id
+					set templateMetaData [readUserMetaData template]
+					foreach current $templateMetaData {
+						array set currentRow $current
+						if {$currentRow(identifier) == $id} {
+							lappend metaData $current
+							getLock "[getFilePrefix]/users/[getUserName]/$id"
+							file copy "[getFilePrefix]/users/template/$id"\
+								"[getFilePrefix]/users/[getUserName]/$id"
+							releaseLock\
+								"[getFilePrefix]/users/[getUserName]/$id"
+						}
+					}
+				}
+			}
+		}
+		writeMetaData
+		releaseLock [getMetaDataFilename]
+	}
+}
+
+# Could be race conditions if two people try to create the same account name
+# at the same time.
+proc addUser {login password passwordDuplicate} {
+	global passwords
+	set loginValid 1
+	set errorMessage ""
+	getLock [getPasswordFilename]
+	readPasswords
+	# Make any e-mail validitiy checks
+	if {$login != ""} {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $passwords $index]
+			if {$index >= [llength $passwords]} {
+				set shouldContinue 0
+			} else {
+				if {$currentRow(login) == $login} {
+					set loginValid 0
+					releaseLock [getPasswordFilename]
+					return 0
+				}
+			}
+			incr index
+		if {$password != $passwordDuplicate} {
+			set loginValid 0
+			releaseLock [getPasswordFilename]
+			return 0
+		}
+	}
+	if {$loginValid} {
+		set newLogin(login) $login
+		set newLogin(password) $password
+		set newLogin(flags) ""
+		set newLogin(reserved) ""
+		lappend passwords [array get newLogin]
+		writePasswords
+		file mkdir "[getFilePrefix]/users/$login"
+		if { [catch {open "[getFilePrefix]/users/$login/metadata" w} \
+			fileId] } {
+			logMessage "Couldn't open file\
+				[getFilePrefix]/users/$login/metadata.  Exiting from\
+				createLogin..."
+			panic
+		} else {
+			puts -nonewline $fileId ""
+			close $fileId
+		}
+		}
+	}
+	releaseLock [getPasswordFilename]
+	return 1
+}
+
+proc authenticate {} {
+	if {[authenticateInternal [CGIValue login] [CGIValue password]]} {
+		return 1
+	}
+	if {[authenticateInternal [CGIValue login] [CGIValue changePasswordNew]]} {
+		return 1
+	}
+	return 0
+}
+
+proc authenticateInternal {login password} {
+	global passwords
+	readPasswords
+	set index 0
+	set shouldContinue 1
+	if {(([shouldAllowGuestAccess] && $login == "guest") ||\
+		([shouldAllowWikiAccess] && $login == "wiki"))} {
+		return 1
+	}
+	while {$shouldContinue} {
+		array set currentRow [lindex $passwords $index]
+		if {$index >= [llength $passwords]} {
+			set shouldContinue 0
+		} else {
+			if {($currentRow(login) == $login) && ($currentRow(password) ==\
+				$password)} {
+				if {![testUserFlag $login "locked"]} {
+					return 1
+				} else {
+					return 0
+				}
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc changePassword {userId password duplicate} {
+	global passwords
+	getLock [getPasswordFilename]
+	readPasswords
+	if {[userExists $userId]} {
+		if {$password == $duplicate} {
+			set index 0
+			set shouldContinue 1
+			while {$shouldContinue} {
+				array set currentRow [lindex $passwords $index]
+				if {$index >= [llength $passwords]} {
+					set shouldContinue 0
+				} else {
+					if {$currentRow(login) == $userId} {
+						set currentRow(password) $password
+						set passwords [lreplace $passwords $index $index\
+							[array get currentRow]]
+						writePasswords
+						releaseLock [getPasswordFilename]
+						return 1
+					}
+				}
+				incr index
+			}
+		} else {
+			releaseLock [getPasswordFilename]
+			return 0
+		}
+	} else {
+		releaseLock [getPasswordFilename]
+		return 0
+	}
+}
+
+proc clearFlag {target flag} {
+	if {[regexp -- "$flag" "$target"]} {
+		regsub -all $flag $target {} target
+		regsub -all {\s+} $target { } target
+	}
+	return $target
+}
+
+proc clearUserFlag {userId flag} {
+	global passwords
+	setLock [getPas
+	if {[userExists $userId]} {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $passwords $index]
+			if {$index >= [llength $passwords]} {
+				set shouldContinue 0
+			} else {
+				if {$currentRow(login) == $userId} {
+					set currentRow(flags) [clearFlag "$currentRow(flags)"\
+						"$flag"]
+					set passwords [lreplace $passwords $index $index [array\
+						get currentRow]]
+					writePasswords
+					return 1
+				}
+			}
+			incr index
+		}
+	}
+	return 0
+}
+
+# This could have race conditions if two people try to make the same account
+# at the same time.
+proc createLogin {} {
+	global passwords
+	getLock [getPasswordFilename]
+	readPasswords
+	set login [CGIValue newLogin]
+	set password [CGIValue password]
+	set passwordDuplicate [CGIValue passwordDuplicate]
+	if {[shouldAllowLoginCreation]} {
+		set loginValid 1
+		set errorMessage ""
+		# Make any e-mail validitiy checks that are desired--checking address
+		# to have valid format.
+		if {$login != ""} {
+			set index 0
+			set shouldContinue 1
+			while {$shouldContinue} {
+				array set currentRow [lindex $passwords $index]
+				if {$index >= [llength $passwords]} {
+					set shouldContinue 0
+				} else {
+					if {$currentRow(login) == $login} {
+						set loginValid 0
+						puts -nonewline "<p>Your e-mail address is already\
+							registered.  Select \"Help! I forgot my\
+							password.\" to have your password e-mailed\
+							to you.</p>\n\
+							<p><input type=\"radio\"\
+							name=\"pageMode\" value=\"forgotPassword\"\
+							onclick=\"document.snippets.submit()\"\
+							checked> Help! I forgot my password.</p>\n\
+							<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+							src=\"[getDocumentURL]/submit.jpg\">\n</p>"
+							#<input type=\"submit\" value=\"Go!\">\n"
+						pageEnd
+						releaseLock [getPasswordFilename]
+						exit 0
+					}
+				}
+				incr index
+			if {$password != $passwordDuplicate} {
+				set loginValid 0
+				puts -nonewline "<p>Passwords do not match.  Please make\
+					sure that you type the exact same password, exactly the\
+					same way, both times.</p>\n"
+				displayCreateLogin
+				pageEnd
+				releaseLock [getPasswordFilename]
+				exit 0
+			}
+		}
+		if {$loginValid} {
+			set newLogin(login) $login
+			set newLogin(password) $password
+			set newLogin(flags) ""
+			set newLogin(reserved) ""
+			lappend passwords [array get newLogin]
+			writePasswords
+			file mkdir "[getFilePrefix]/users/$login"
+			if { [catch {open "[getFilePrefix]/users/$login/metadata" w} \
+				fileId] } {
+				logMessage "Couldn't open file\
+					[getFilePrefix]/users/$login/metadata.  Exiting from\
+					createLogin..."
+				panic
+			} else {
+				puts -nonewline $fileId ""
+				close $fileId
+			}
+			welcomeScreen $login $password
+			pageEnd
+			releaseLock [getPasswordFilename]
+			exit 0
+			}
+		}
+	}
+	puts -nonewline "<p>This server is not presently set up to create\
+		logins.</p>\n\
+		<input type=\"hidden\" name=\"pageMode\" value=\"entryMenu\">\n\
+		<p><input type=\"image\" name=\"Return to main menu\"\ border=\"0\"
+		src=\"[getDocumentURL]/return_to_the_main_menu.jpg\"></p>" 
+		#<p><input type=\"submit\" value=\"Return to main menu\"></p>" 
+	pageEnd
+	releaseLock [getPasswordFilename]
+	exit 0
+}
+
+# This could have race conditions if two people use the same account and try
+# to make new topics at the same [clock clicks].
+proc createTopic {} {
+	global metaData
+	#readMetaData
+	#puts "in createTopic"
+	set prefix "snippets"
+	set extension ""
+	set newTopic(identifier) "$prefix[clock seconds][expr abs([clock\
+		clicks])]$extension"
+	#puts "$prefix[clock seconds][clock clicks]$extension"
+	#puts $newTopic(identifier)
+	set newTopic(title) ""
+	set newTopic(header) ""
+	set newTopic(flags) "show"
+	set newTopic(reserved) ""
+	lappend metaData [array get newTopic]
+	set fullFilename "[getFilePrefix]/users/[getUserName]/$newTopic(identifier)"
+	#puts $fullFilename
+	#puts $newTopic(identifier)
+	writeMetaData
+	if { [catch {open $fullFilename w} fileId] } {
+		logMessage "Couldn't open file $fullFilename. Exiting from createTopic..."
+		panic
+	} else {
+		puts $fileId "\"\""
+		close $fileId
+	}
+	return $newTopic(identifier)
+}
+
+proc debugLog {message} {
+	global debugMode
+	if {$debugMode} {
+		logMessage $message
+	}
+}
+
+proc deleteUser {userId} {
+	global passwords
+	global administrativeActionResult
+	getLock [getPasswordFilename]
+	readPasswords
+	if {[userExists $userId]} {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $passwords $index]
+			if {$index >= [llength $passwords]} {
+				set shouldContinue 0
+			} else {
+				if {$currentRow(login) == $userId} {
+					set passwords [lreplace $passwords $index $index]
+				}
+			}
+			incr index
+		}
+		writePasswords
+		foreach filename [glob [getFilePrefix]/users/$userId] {
+			file delete -force $filename
+		}
+		file delete -force "[getFilePrefix]/users/$userId"
+		set administrativeActionResult "<p>User <em>$userId</em> successfully\
+			deleted.</p>\n"
+	} else {
+		set administrativeActionResult "<p>Error: user <em>$userId</em> does\
+			not exist and therefore could not be deleted.</p>\n"
+	}
+	releaseLock [getPasswordFilename]
+}
+
+proc displayCreateLogin {} {
+	puts -nonewline "<p>E-mail address:<br>\n\
+		<input type=\"text\" name=\"newLogin\"\
+		size=\"[getTextWidth]\"></p>\n\
+		<p>Password:<br>\n\
+		<input type=\"password\" name=\"password\"\
+		size=\"[getTextWidth]\"></p>\n\
+		<p>Repeat password:<br>\n\
+		<input type=\"password\" name=\"passwordDuplicate\"\
+		size=\"[getTextWidth]\"></p>\n\
+		<p>We need your e-mail address so we can send you your\
+		password if it is ever lost.  (What's the\
+		<a href=\"[getDocumentURL]/privacy.html\"\
+		target=\"_blank\">privacy policy</a> about\
+		this?)</p>\n\
+		<p>Children under 13 must get their parents'\
+		permission to set up an account (this is legally\
+		required in the U.S., where this software was written).</p>\n\
+		<input type=\"hidden\" name=\"pageMode\"\
+		value=\"createLogin\">\n\
+		<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+		src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+		#<input type=\"submit\" value=\"Go!\">\n"
+}
+
+proc displayLogin {} {
+	puts -nonewline "<p>E-mail address:<br>\n\
+		<input type=\"text\" name=\"login\"\
+		size=\"[getTextWidth]\"></p>\n\
+		<p>Password:<br>\n\
+		<input type=\"password\" name=\"password\"\
+		size=\"[getTextWidth]\"></p>\n\
+		<input type=\"hidden\" name=\"pageMode\"\
+		value=\"snippets\">\n\
+		<p><input type=\"image\" name=\"Log in!\"\ border=\"0\"
+		src=\"[getDocumentURL]/login.jpg\"></p>\n"
+		#<input type=\"submit\" value=\"Log in\">\n"
+}
+
+proc displayMotd {} {
+	if {[file exists [getFilePrefix]/general/motd]} {
+		readFile [getFilePrefix]/general/motd
+	}
+	if {[file exists [getFilePrefix]/users/[getUserName]]} {
+		readFile [getFilePrefix]/users/[getUserName]
+	}
+}
+
+proc displayStandardChoices {} {
+	puts "<hr>\n<p>"
+	puts -nonewline "<input type=\"radio\" name=\"pageMode\"\
+		value=\"snippets\"\ checked\
+		onclick=\"document.snippets.submit()\"\
+		>\n\
+		Show another snippets page.<br>\n\
+		<input type=\"radio\" name=\"pageMode\" value=\"metaSnippet\"\
+		onclick=\"document.snippets.submit()\"\
+		>\n\
+		Edit what appears on the snippets page.\n"
+	switch [CGIValue accessMethod] {
+		guest -
+		wiki {
+		}
+		default {
+			puts -nonewline "<br><input type=\"radio\" name=\"pageMode\"\
+				value=\"accountManagement\"\
+				onclick=\"document.snippets.submit()\"\
+				>\n\
+				Change your password or otherwise manage your account.<br>\n"
+		}
+	}
+	if {[isAdministrator [getUserName]]} {
+		puts -nonewline "<br><input type=\"radio\" name=\"pageMode\"\
+			value=\"administrative\"\
+			onclick=\"document.snippets.submit()\"\
+			> Use administrative tools."
+	}
+	puts -nonewline "</p>\n<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+		src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+	#puts -nonewline "<input type=\"submit\" value=\"Go!\"></p>\n"
+}
+
+proc editTopic {identifier} {
+	puts "<input type=\"hidden\" name=\"topic\" value=\"$identifier\">\n\
+		<input type=\"hidden\" name=\"pageMode\" value=\"metaSnippetAction\">\n\
+		<h2>Topic</h2>\n\
+		<p><input type=\"text\" name=\"title_$identifier\"\
+		size=\"[getTextWidth]\" value=\"[quoteHtmlMetacharacters [getTopicName\
+		$identifier]]\"></p>\n\
+		<h2>Header</h2>\n\
+		<p>This header, if any, will appear before each snippet.</p>\n\
+		<textarea name=\"header_$identifier\" rows=\"3\"\n\
+		cols=\"[getTextWidth]\" wrap=\"soft\">[quoteHtmlMetacharacters\
+		[getHeader $identifier]]</textarea>"
+	set topic [readTopic $identifier]
+	puts "<h2>Entries:</h2>"
+	set newIndex 0
+	if {[llength $topic] > 0} {
+		for {set index 0} {$index < [llength $topic]} {incr index} {
+			set entry [lindex $topic $index]
+			puts -nonewline "<p><textarea name=\"value_$identifier"
+			puts -nonewline "_$index\" rows=\"3\" cols=\"[getTextWidth]\"\
+				wrap=\"soft\">"
+			puts -nonewline [quoteHtmlMetacharacters $entry]
+			puts -nonewline "</textarea><br>\n\
+				<input type=\"checkbox\" name=\"delete_$identifier"
+			puts -nonewline "_$index\">Delete this entry</p>\n"
+		}
+		set newIndex $index
+	}
+	puts -nonewline "<h2>Add new entry:</h2>\n\
+		<p><textarea name=\"value_$identifier"
+	puts -nonewline "_$newIndex\" rows=\"5\"\
+		cols=\"[getTextWidth]\" wrap=\"soft\"></textarea></p>\n\
+		<hr>\n\
+		<p><input type=\"radio\" name=\"shouldsave\" value=\"yes\" checked>\
+		Save any changes<br>\n\
+		<input type=\"radio\" name=\"shouldsave\" value=\"no\">\
+		Discard any changes</p>\n\
+		<hr>\n\
+		<p><input type=\"radio\" name=\"action\"\n\
+		value=\"edittopic_$identifier\" checked\
+		onclick=\"document.snippets.submit()\"\
+		>\
+		Continue editing this topic<br>\n\
+		<input type=\"radio\" name=\"action\" value=\"metaSnippet\"\
+		onclick=\"document.snippets.submit()\"\
+		>\
+		Return to the main (editing) menu.</p>\n\
+		<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+		src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+		#<p><input type=\"submit\" value=\"Go!\"></p>\n"
+}
+
+# Presently a noop filter.  May be modified to sanitize HTML, convert ASCII to
+# HTML, and so on and so forth.
+proc filterText {original} {
+	if {[shouldAllowHtmlSnippets]} {
+		if {[testUserFlag [getUserName] "text"]} {
+			return [textToHtml $original]
+		} elseif {[testUserFlag [getUserName] "html"]} {
+			return $original
+		} else {
+			switch [getDefaultDisplayMethod] {
+				"text" {
+					return [textToHtml $original]
+				}
+				"html" {
+					return "<p>$original</p>"
+				}
+				"mixed" -
+				default {
+					return "[lineBreaksToHtml $original]"
+				}
+			}
+		}
+	} else {
+		return [textToHtml $original]
+	}
+}
+
+proc forgotPassword {} {
+	puts -nonewline "<input type=\"hidden\" name=\"pageMode\"\
+		value=\"retrievePassword\">\n\
+		<p>Please type in the e-mail address that you used when creating your\
+		account:</p>\n\
+		<p><input type=\"text\" name=\"login\" size=\"[getTextWidth]\"></p>\n\
+		<p><input type=\"image\" name=\"E-mail me my password\"\ border=\"0\"
+		src=\"email_me_my_password.jpg\"></p>\n"
+		#<p><input type=\"submit\" value=\"E-mail me my password\"></p>\n"
+}
+
+proc getActionURL {} {
+	return [getConfigValue "actionURL" "/cgi-bin/snippets"]
+}
+
+proc getConfigFilename {} {
+	global configFilename
+	return $configFilename
+}
+
+proc getConfigValue {key default} {
+	global configResult
+	#debugLog "gcv1 $key $default"
+	foreach candidateKey [array names configResult] {
+		#debugLog "gcv1.1 $candidateKey"
+		if {$candidateKey == $key} {
+			#debugLog "gcv2 $configResult($key)"
+			return $configResult($key)
+		}
+	}
+	return $default
+}
+
+proc getCurrentMtimeFilename {} {
+	return "[getFilePrefix]/general/current"
+}
+
+proc getDefaultAccessMethod {} {
+	return [getConfigValue "defaultAccessMethod" "guest"]
+}
+
+proc getDefaultDisplayMethod {} {
+	return [getConfigValue "defaultDisplayMethod" "mixed"]
+}
+
+proc getDeletionMarker {} {
+	return "Scheduled for deletion 50mwrx34."
+}
+
+proc getDocumentURL {} {
+	return [getConfigValue "documentURL" "/snippets/"]
+}
+
+proc getFilePrefix {} {
+	return [getConfigValue "filePrefix" "/var/www/snippets/"]
+}
+
+proc getFullBaseURL {} {
+	return [getConfigValue "fullBaseURL" "http://127.0.0.1/cgi-bin/snippets"]
+}
+
+proc getHeader {id} {
+	global metaData
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		if {$index >= [llength $metaData]} {
+			set shouldContinue 0
+		} else {
+			array set current [lindex $metaData $index]
+			if {$current(identifier) == $id} {
+				return $current(header)
+			}
+		}
+		incr index
+	}
+	return ""
+}
+
+# Parts of this are intended to run quickly, to decrease the window of bad
+# opportunity for a file to become corrupted.
+proc getLock {filename} {
+	set currentMtimeFilename [getCurrentMtimeFilename]
+	set lockTimeout [getLockTimeout]
+	if {[file exists "$filename.lock"]} {
+		set shouldContinue 1
+		while {$shouldContinue} {
+			after 10
+			if {[file exists "$filename.lock"]} {
+				if { [catch {open "$currentMtimeFilename" w} fileId] } {
+					logMessage "gl1 Couldn't open $filename.lock for writing."
+					panic
+				} else {
+					close $fileId
+				}
+				if {[file mtime "$currentMtimeFilename"] -\
+					[file mtime "$filename.lock"] > $lockTimeout} {
+					# Assume it's timed out, and commandeer the lock for
+					# ourselves.
+					if { [catch {open "$currentMtimeFilename" w} fileId] } {
+						logMessage "gl2 Couldn't open $filename.lock for\
+							writing."
+						panic
+					} else {
+						close $fileId
+					}
+					return
+				}
+			} else {
+				if { [catch {open "$filename.lock" w} fileId] } {
+					logMessage "gl1 Couldn't open $filename.lock for writing."
+					panic
+				} else {
+					close $fileId
+				}
+				return
+			}
+		}
+	} else {
+		if { [catch {open "$filename.lock" w} fileId] } {
+			logMessage "gl1 Couldn't open $filename.lock for writing."
+			panic
+		} else {
+			close $fileId
+		}
+		return
+	}
+}
+
+proc getLockTimeout {} {
+	return [getConfigValue "lockTimeout" "20"]
+}
+
+proc getMailerCommand {login} {
+	set login [removeShellMetacharacters $login]
+	set template [getConfigValue "mailerCommand"\
+		"/usr/bin/Mail LOGIN -s \"Your Snippets password\""]
+	regsub -- {LOGIN} $template $login template
+	return $template
+}
+
+proc getMetaDataFilename {} {
+	return [getUserMetaDataFilename [getUserName]]
+}
+
+proc getNumberOfTopics {} {
+	global metaData
+	return [llength $metaData]
+}
+
+#Name does not reflect full functionality.
+proc getPageMode {} {
+	global administrativeActionResult
+	global actionObject
+	global editCommand
+	global pageModeHasBeenCalled
+	global pageModeResult
+	if {$pageModeHasBeenCalled} {
+		return $pageModeResult
+	}
+	set pageModeHasBeenCalled 1
+	set pageModeResult "snippets"
+	set editCommand ""
+	set rawMode [CGIValue pageMode]
+	if {[CGIValue login] == "guest"} {
+		set pageModeResult "connect"
+		return "connect"
+	}
+	switch $rawMode {
+		"administrative" -
+		"connect" -
+		"createLogin" -
+		"retrievePassword" {
+			set pageModeResult $rawMode
+			return $rawMode
+		}
+		"snippets" {
+			set pageModeResult $rawMode
+			addTemplates
+			return $rawMode
+		}
+		"accountManagement" {
+			switch [CGIValue accountManagement] {
+				"returnToSnippets" {
+					set pageModeResult "snippets"
+					return "snippets"
+				}
+				"addTemplates" -
+				"changePassword" -
+				"updateHtmlPreference" -
+				default {
+					processAccountManagement
+					set pageModeResult "accountManagement"
+					return "accountManagement"
+				}
+			}
+		}
+		"administrativeAction" {
+			if {[isAdministrator [getUserName]]} {
+				switch [CGIValue administrativeAction] {
+					"addUser" -
+					"changeUserPassword" -
+					"deleteUser" -
+					"grantAdministrativePriveleges" -
+					"lockUser" -
+					"revokeAdministrativePriveleges" -
+					"resetUserFromTextOnly" -
+					"setUserToTextOnly" -
+					"unlockUser" {
+						processAdministrativeAction
+						set pageModeResult "administrative"
+						return "administrative"
+					}
+					"switchUser" {
+						if {[userExists [CGIValue switchUserId]]} {
+							puts "<input type=\"hidden\"\
+								name=\"effectiveUserId\"\ value=\"[CGIValue\
+								switchUserId]\">"
+							#set effectiveUserId [CGIValue switchUserId]
+							puts "<p><strong>You are now using the program as\
+								user <em>[CGIValue switchUserId]</em>.</p>"
+							set pageModeResult "metaSnippet"
+							return "metaSnippet"
+						} else {
+							set administrativeActionResult "<p>There does not\
+								appear to be a user <em>[CGIValue\
+								switchUserId]</em>.  You might check your
+								spelling.</p>"
+							set pageModeResult "administrative"
+							return "administrative"
+						}
+					}
+					"listUsers" {
+						set pageModeResult "listUsers"
+						return "listUsers"
+					}
+					"returnToSnippets" {
+						set pageModeResult "snippets"
+						return "snippets"
+					}
+				}
+			} else {
+				set pageModeResult "snippets"
+				return "snippets"
+			}
+		}
+		"metaSnippet" {
+			if {[CGIValue shouldsave] == "yes"} {
+				saveSubmittedChanges
+			}
+			set pageModeResult "metaSnippet"
+			return "metaSnippet"
+		}
+		"metaSnippetAction" {
+			set action [CGIValue action]
+			switch -regexp $action {
+				{^(.*?)_(.*)$} {
+					regexp {^(.*?)_(.*)$} $action match editCommand \
+						actionObject
+					switch -exact -- $editCommand {
+						edit {
+							set pageModeResult "editSnippet"
+							return "editSnippet"
+						}
+						edittopic {
+							set pageModeResult "editTopic"
+							return "editTopic"
+						}
+						default {
+							set pageModeResult "metaSnippet"
+							return "metaSnippet"
+						}
+					}
+				}
+				{^snippets$} {
+					set pageModeResult "snippets"
+					return "snippets"
+				}
+				{^metaSnippet$} {
+					set pageModeResult "metaSnippet"
+					return "metaSnippet"
+				}
+				{^newTopic$} {
+					set pageModeResult "newTopic"
+					return "newTopic"
+				}
+				{^mainMenu$} {
+					set pageModeResult "entryMenu"
+					return "entryMenu"
+				}
+			}
+		}
+		default {
+			set pageModeResult "entryMenu"
+			return "entryMenu"
+		}
+	}
+}
+
+proc getPassword {login} {
+	global passwords
+	readPasswords
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		array set currentRow [lindex $passwords $index]
+		if {$index >= [llength $passwords]} {
+			set shouldContinue 0
+		} else {
+			if {($currentRow(login) == $login)} {
+				return $currentRow(password)
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc getPasswordFilename {} {
+	return "[getFilePrefix]/general/access"
+}
+
+proc getSelectedTopic {} {
+	return [CGIValue topic]
+}
+
+proc getServerAdminEmail {} {
+	return [getConfigValue "serverAdminEmail" "webmaster@127.0.0.1"]
+}
+
+proc getSnippetFilename {topic} {
+	return [concat [getFilePrefix]/users/[getUserName]/$topic]
+}
+
+proc getTextWidth {} {
+	return [getConfigValue "textWidth" "80"]
+}
+
+proc getTopicName {id} {
+	global metaData
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		if {$index >= [llength $metaData]} {
+			set shouldContinue 0
+		} else {
+			array set current [lindex $metaData $index]
+			if {$current(identifier) == $id} {
+				return $current(title)
+			}
+		}
+		incr index
+	}
+	return ""
+}
+
+proc getTopics {} {
+	global metaData
+	readMetaData
+	set result {}
+	for {set index 0} {$index < [llength $metaData]} {incr index} {
+		array set current [lindex $metaData $index]
+		if {$current(identifier) != ""} {
+			lappend result $current(identifier)
+		}
+	}
+	return $result
+}
+proc getUserMetaDataFilename {userId} {
+	return [concat [getFilePrefix]/users/$userId/metadata]
+}
+
+proc getUserName {} {
+	if {[CGIValue login] != ""} {
+		if {[isAdministrator [CGIValue login]]} {
+			if {[CGIValue effectiveUserId] != ""} {
+				return [CGIValue effectiveUserId]
+			}
+			if {"[CGIValue switchUserId]" != ""} {
+				if {"[CGIValue administrativeAction]" == "switchUser"} {
+					if {[userExists [CGIValue switchUserId]]} {
+						return [CGIValue switchUserId]
+					}
+				}
+			}
+		}
+		return [CGIValue login]
+	} elseif {[CGIValue newLogin] != ""} {
+		return [CGIValue newLogin]
+	} else {
+		switch [CGIValue accessMethod] {
+			"wiki" {
+				return [CGIValue accessMethod]
+			}
+			"guest" -
+			default {
+				return "guest"
+			}
+		}
+	}
+}
+
+proc grantAdministrativePriveleges {userId} {
+	global administrativeActionResult
+	if {[setUserFlag "$userId" "administrator"]} {
+		set administrativeActionResult "<p><strong>User $userId\
+			has been granted administrative priveleges.</strong></p>\n"
+	} else {
+		set administrativeActionResult "<p><strong>There was an error\
+			attempting to grant administrative priveleges to\
+			$userId.</strong></p>\n"
+	}
+}
+
+proc hide {id} {
+	global metaData
+	for {set index 0} {$index < [llength $metaData]} {incr index} {
+		array set current [lindex $metaData $index]
+		if {$current(identifier) == $id} {
+			set current(flags) [clearFlag "$current(flags)" "show"]
+			set current(flags) [setFlag "$current(flags)" "hide"]
+		set metaData [lreplace $metaData $index $index [array get current]]
+		}
+	}
+	writeMetaData
+}
+
+proc init {} {
+	global administrativeActionResult
+	global configOptions
+	global debugMode
+	global metaDataRead
+	global pageModeHasBeenCalled
+	global passwordsRead
+	global resultArray
+	#One of the following two lines should be uncommented.
+	#set debugMode 1
+	set debugMode 0
+	debugLog "Starting processing..."
+	puts "Content-type: text/html"
+	puts ""
+	set administrativeActionResult ""
+	set metaDataRead 0
+	set pageModeHasBeenCalled 0
+	set passwordsRead 0
+	set configOptions {\
+		"actionURL"\
+		"defaultAccessMethod"\
+		"defaultDisplayMethod"\
+		"documentURL"\
+		"filePrefix"\
+		"fullBaseURL"\
+		"lockTimeout"\
+		"mailerCommand"\
+		"serverAdminEmail"\
+		"shouldAllowGuestAccess"\
+		"shouldAllowHtmlSnippets"\
+		"shouldAllowLoginAccess"\
+		"shouldAllowLoginCreation"\
+		"shouldAllowWikiAccess"\
+		"textWidth"\
+		}
+	set configResult(exists) 1
+	expr srand([clock clicks])
+	CGIParse
+	loadConfigFile [getConfigFilename]
+	## Commented out solution because of weird syntax complaints re:
+	## CGIValue.  Addresses chicken-and-egg concern if user tries to look up
+	## password for misspelled userID.
+	#set pageMode [CGIValue pageMode]
+	#if {"$pageMode" == "retrievePassword"} {
+		#if {[shouldAllowLoginAccess]} {
+			#retrievePassword
+		#}
+	#}
+	if {[shouldAuthenticate] && [authenticate]} {
+		readMetaData
+	}
+	readPasswords
+	if {[CGIValue shouldsave] == "yes"} {
+		saveSubmittedChanges
+	}
+	debugLog [CGIQuery]
+	if {[shouldAuthenticate]} {
+		if {![authenticate]} {
+			pageStart 0
+			puts -nonewline "\
+				<p>The e-mail or password you have supplied is incorrect.\n\
+				Would you like to try again?</p>\n\
+				<p>E-mail address:<br>\n\
+				<input type=\"text\" name=\"login\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p>Password:<br>\n\
+				<input type=\"password\" name=\"password\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"pageMode\" value=\"snippets\"\
+				onclick=\"document.snippets.submit()\" checked> Log in<br>\n"
+				if {[shouldAllowLoginCreation]} {
+					puts -nonewline "\
+						<input type=\"radio\" name=\"pageMode\"\
+						value=\"createLogin\"
+						onclick=\"document.snippets.submit()\">\
+						Create a new login<br>\n"
+				}
+			puts -nonewline "\
+				<input type=\"radio\" name=\"pageMode\"\
+				value=\"forgotPassword\"\
+				onclick=\"document.snippets.submit()\">\
+				Help! I forgot my password!</p>\n\
+				<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+				src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+				#<input type=\"submit\" value=\"Go!\">\n"
+			pageEnd
+			exit 0
+		}
+	}
+}
+
+proc isActive {topic} {
+	global metaData
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		array set currentRow [lindex $metaData $index]
+		if {$index >= [llength $metaData]} {
+			set shouldContinue 0
+		} else {
+			if {$currentRow(identifier) == $topic} {
+				switch -regexp -- $currentRow(flags) {
+					show {
+						return 1
+					}
+					default {
+						return 0
+					}
+				}
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc isAdministrator {login} {
+	global passwords
+	readPasswords
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		array set currentRow [lindex $passwords $index]
+		if {$index >= [llength $passwords]} {
+			set shouldContinue 0
+		} else {
+			if {$currentRow(login) == $login} {
+				switch -regexp -- $currentRow(flags) {
+					administrator {
+						return 1
+					}
+					default {
+						return 0
+					}
+				}
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc isAllowed {option {default 0}} {
+	return [isTrue [getConfigValue $option $default]]
+}
+
+proc isTrue {optionValue} {
+	switch [string tolower $optionValue] {
+		true -
+		yes -
+		on -
+		1 {
+			return 1
+		}
+		default {
+			return 0
+		}
+	}
+}
+
+proc isValidLogin {login} {
+	global passwords
+	readPasswords
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		array set currentRow [lindex $passwords $index]
+		if {$index >= [llength $passwords]} {
+			set shouldContinue 0
+		} else {
+			if {($currentRow(login) == $login)} {
+				return 1
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc lineBreaksToHtml {text} {
+	set lines [split "\n$text\n" "\n"]
+	set result ""
+	for {set i 0} {$i < [llength $lines]} {incr i} {
+		append result [lindex $lines $i]
+		if {$i < [expr [llength $lines] - 1]} {
+			if {[regexp -- "^\s*$" "[lindex $lines $i]"]} {
+				if {[regexp -- "^\s*$" "[lindex $lines [expr $i + 1]]"]} {
+					append result "\n"
+				} else {
+					append result "\n<p>"
+				}
+			} else {
+				if {[regexp -- "^\s*$" "[lindex $lines [expr $i + 1]]"]} {
+					append result "</p>\n"
+				} else {
+					append result "<br>\n"
+				}
+			}
+		}
+	}
+	return $result
+}
+
+proc listUsers {} {
+	global passwords
+	set breakNeeded 0
+	puts -nonewline "<h2>Users with accounts on this system:</h2>\n<p>"
+	foreach current $passwords {
+		array set currentRow $current
+		if {$breakNeeded} {
+			puts -nonewline "<br>\n"
+		}
+		puts -nonewline "$currentRow(login)"
+		set breakNeeded 1
+	}
+	puts -nonewline "</p>\n\
+		<p><input type=\"radio\" name=\"pageMode\"\
+		value=\"administrative\" onclick=\"document.snippets.submit()\"\
+		checked> Return to the administrative menu.</p>\n\
+		<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+		src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+		#<p><input type=\"submit\" value=\"Go!\"></p>\n"
+}
+
+proc logMessage {message} {
+	puts stderr "Snippets \[[clock format [clock seconds]]\]: $message"
+}
+
+# New CGI variables should be listed here.
+proc mightBeUsedInFilename {variableName} {
+	switch -regexp -- $variableName {
+		"^accountManagement$" -
+		"^administrativeAction$" -
+		"^changePasswordDuplicate" -
+		"^changePasswordOld$" -
+		"^changePasswordNew$" -
+		"^changeUserPasswordPassword$" -
+		"^changeUserPasswordDuplicate$" -
+		"^delete_" -
+		"^header_" -
+		"^newUserPassword$" -
+		"^newUserPasswordDuplicate$" -
+		"^pageMode$" -
+		"^password$" -
+		"^passwordDuplicate$" -
+		"^prefersToUseHtml$" -
+		"^previousPageMode$" -
+		"^shouldAddTemplates$" -
+		"^shouldsave$" -
+		"^title_" -
+		"^value_" {
+			return 0
+		}
+		"^accessMethod$" -
+		"^action$" -
+		"^changeUserPasswordEmail$" -
+		"^deleteUserId$" -
+		"^effectiveUserId$" -
+		"^grantAdministrativePrivelegesUserId$" -
+		"^importttemplate_" -
+		"^lockUserId$" -
+		"^login$" -
+		"^newlogin$" -
+		"^newUserId$" -
+		"^resetUserFromTextOnlyUserId$" -
+		"^revokeAdministrativePrivelegesUserId$" -
+		"^setUserToTextOnlyUserId$" -
+		"^topic$" -
+		"^unlockUserId$" -
+		default {
+			return 1
+		}
+	}
+}
+
+proc moveDown {id} {
+	global metaData
+	for {set i 0} {$i < [expr [getNumberOfTopics] - 1]} {incr i} {
+		array set current [lindex $metaData $i]
+		If {$current(identifier) == $id} {
+			set juggle [lindex $metaData [expr $i + 1]]
+			set metaData [lreplace $metaData [expr $i + 1] \
+				[expr $i + 1] [lindex $metaData $i]]
+			set metaData [lreplace $metaData $i $i $juggle]
+			writeMetaData
+			return
+		}
+	}
+}
+
+proc moveUp {id} {
+	global metaData
+	for {set i 1} {$i < [getNumberOfTopics]} {incr i} {
+		array set current [lindex $metaData $i]
+		if {$current(identifier) == $id} {
+			set juggle [lindex $metaData [expr $i - 1]]
+			set metaData [lreplace $metaData [expr $i - 1] \
+				[expr $i - 1] [lindex $metaData $i]]
+			set metaData [lreplace $metaData $i $i $juggle]
+			writeMetaData
+			return
+		}
+	}
+}
+
+proc pageEnd {} {
+	puts "</form>"
+	readFile [concat [getFilePrefix]/general/footer]
+}
+
+proc pageStart {{preserveLogin 1}} {
+	readFile [concat [getFilePrefix]/general/header]
+	puts "<form method=\"post\" action=\"[getActionURL]\" name=\"snippets\">"
+	#puts "<form method=\"get\" action=\"[getActionURL]\" name=\"snippets\">"
+	puts "<input type=\"hidden\" name=\"previousPageMode\"\
+		value=\"[getPageMode]\">"
+	if {$preserveLogin} {
+		if {[CGIValue login] != "" && [authenticate]} {
+			puts "<input type=\"hidden\" name=\"login\" value=\"[CGIValue\
+				login]\">"
+		}
+		if {([CGIValue changePasswordNew] != "") &&\
+			([CGIValue changePasswordNew] == \
+			[CGIValue changePasswordDuplicate])} {
+			puts "<input type=\"hidden\" name=\"password\"\
+				value=\"[CGIValue changePasswordNew]\">"
+		} else {
+			if {[CGIValue password] != "" && [authenticate]} {
+				puts "<input type=\"hidden\" name=\"password\"\
+					value=\"[CGIValue password]\">"
+			}
+		}
+		if {[CGIValue effectiveUserId] != "" && [authenticate]\
+			&& [isAdministrator [CGIValue login]]} {
+			puts "<input type=\"hidden\" name=\"effectiveUserId\"\
+				value=\"[CGIValue effectiveUserId]\">"
+		}
+		if {[CGIValue switchUserId] != "" && [authenticate]\
+			&& [isAdministrator [CGIValue login]]} {
+			puts "<input type=\"hidden\" name=\"effectiveUserId\"\
+				value=\"[CGIValue switchUserId]\">"
+		}
+	}
+}
+
+proc panic {} {
+	puts "Panicking..."
+	pageEnd
+	exit 1
+}
+
+proc printHeader {topic} {
+	puts "[filterText [getHeader $topic]]"
+}
+
+proc printSnippet {topic} {
+	puts "[filterText [selectSnippet $topic]]"
+}
+
+proc printTopicName {topic} {
+	if {[getTopicName $topic] != ""} {
+		if {[shouldAllowHtmlSnippets] && ![testUserFlag [getUserName] "text"]}\
+			{
+			puts "<h2>[getTopicName $topic]</h2>"
+		} else {
+			puts "<h2>[textToHtml [getTopicName $topic]]</h2>"
+		}
+	} else {
+		puts -nonewline "\[Topic not yet named.\]"
+	}
+}
+
+proc processAccountManagement {} {
+	global accountManagementResult
+	switch -exact -- [CGIValue "accountManagement"] {
+		"addTemplates" {
+			addTemplates
+			set accountManagementResult "<p><strong>The template(s) you\
+				selected have been added.</strong></p>"
+		}
+		"changePassword" {
+			if {[authenticateInternal [getUserName]\
+				[CGIValue changePasswordOld]]} {
+				if {[changePassword [getUserName] [CGIValue changePasswordNew]\
+					[CGIValue changePasswordDuplicate]]} {
+					set accountManagementResult "<p><strong>You have\
+						successfully changed your password.</strong></p>"
+				} else {
+					set accountManagementResult "<p><strong>An error occurred,\
+						so your password is the old value.</strong></p>"
+				}
+			}
+		}
+		"updateHTMLPreference" {
+			if {[CGIValue prefersToUseHtml] != ""} {
+				setUserFlag [getUserName] "html"
+			} else {
+				clearUserFlag [getUserName] "html"
+			}
+		}
+	}
+}
+
+proc processAdministrativeAction {} {
+	global administrativeActionResult
+	if {[isAdministrator [CGIValue "login"]]} {
+		switch -exact -- [CGIValue "administrativeAction"] {
+			"addUser" {
+				set newUserId [CGIValue "newUserId"]
+				set newUserPassword [CGIValue "newUserPassword"]
+				set newUserPasswordDuplicate [CGIValue\
+					"newUserPasswordDuplicate"]
+				if {[addUser "$newUserId" "$newUserPassword"\
+					"$newUserPasswordDuplicate"]} {
+					set administrativeActionResult "<p><strong>New user\
+						[CGIValue newUserId] successfully
+						created.</strong></p>\n"
+				} else {
+					set administrativeActionResult "<p><strong>An error\
+						occurred in attempting to add user [CGIValue\
+						newUserId].</strong></p>\n"
+				}
+			}
+			"changeUserPassword" {
+				if {[changePassword [CGIValue changeUserPasswordEmail]\
+					[CGIValue changeUserPasswordPassword]\
+					[CGIValue changeUserPasswordDuplicate]]} {
+					set administrativeActionResult "<p><strong>Password\
+						successfully changed for [CGIValue\
+						changeUserPasswordEmail].</strong></p>\n"
+				} else {
+					set administrativeActionResult "<p><strong>Error: password\
+						not successfully changed.</strong></p>\n"
+				}
+			}
+			"deleteUser" {
+				deleteUser [CGIValue deleteUserId]
+			}
+			"grantAdministrativePriveleges" {
+				grantAdministrativePriveleges [CGIValue\
+					grantAdministrativePrivelegesUserId]
+			}
+			"revokeAdministrativePriveleges" {
+				revokeAdministrativePriveleges [CGIValue\
+					revokeAdministrativePrivelegesUserId]
+			}
+			"lockUser" {
+				if {[setUserFlag [CGIValue lockUserId] "locked"]} {
+					set administrativeActionResult "<p><strong>User
+						<em>[CGIValue lockUserId]</em> is now\
+						locked.</strong></p>\n"
+				} else {
+					set administrativeActionResult "<p><strong>An error\
+						occurred in attempting to lock user <em>[CGIValue\
+						lockUserId]</em>.<strong></p>\n"
+				}
+			}
+			"unlockUser" {
+				if {[clearUserFlag [CGIValue unlockUserId] "locked"]} {
+					set administrativeActionResult "<p><strong>User\
+						<em>[CGIValue unlockUserId]</em> is now\
+						unlocked.</strong></p>\n"
+				} else {
+					set administrativeActionResult "<p><strong>An error\
+						occurred in attempting to unlock user <em>[CGIValue\
+						unlockUserId]</em>.<strong></p>\n"
+				}
+			}
+			"setUserToTextOnly" {
+				if {[setUserFlag [CGIValue setUserToTextOnlyUserId] "text"]} {
+					set administrativeActionResult "<p><strong>User\
+						<em>[CGIValue setUserToTextOnlyUserId]</em> is now set\
+						to text-only viewing.<strong></p>\n"
+				} else {
+					set administrativeActionResult "<p><strong>An error\
+						occurred in attempting to set user <em>[CGIValue\
+						setUserToTextOnlyUserId]</em> to text-only\
+						viewing.</strong></p>\n"
+				}
+			}
+			"resetUserFromTextOnly" {
+				if {[clearUserFlag [CGIValue resetUserFromTextOnlyUserId]\
+					"text"]} {
+					set administrativeActionResult "<p><strong>User\
+						<em>[CGIValue resetUserFromTextOnlyUserId]</em> is no\
+						longer set to text-only viewing.</strong></p>\n"
+				} else {
+					set administrativeActionResult "<p></strong>An error\
+						occurred in attempting to set user <em>[CGIValue\
+						resetUserFromTextOnlyUserId]</em> to no longer have\
+						text-only viewing.</strong></p>\n"
+				}
+			}
+		}
+	} else {
+		logMessage "Non-administrative user somehow got into\
+			processAdministrativeAction."
+	}
+}
+
+proc quoteHtmlMetacharacters {toQuote} {
+	regsub -all "&" "$toQuote" "\\&amp;" toQuote
+	regsub -all "<" "$toQuote" "\\&lt;" toQuote
+	regsub -all ">" "$toQuote" "\\&gt;" toQuote
+	return $toQuote
+}
+
+proc readFile {filename} {
+	if { [catch {open $filename r} fileId] } {
+		logMessage "Couldn't open file $filename. Exiting from readFile..."
+		panic
+	} else {
+		puts [read $fileId]
+		close $fileId
+	}
+}
+
+proc readMetaData {{shouldForce 0}} {
+	global metaData
+	global metaDataRead
+	if {$metaDataRead && !$shouldForce} {
+		return
+	}
+	set metaData [readUserMetaData [getUserName] $shouldForce]
+	set metaDataRead 1
+}
+
+proc readUserMetaData {userId {shouldForce 0}} {
+	set metaData {}
+	if { [catch {open [getUserMetaDataFilename $userId] r} fileId] } {
+		if { [catch {open [getUserMetaDataFilename $userId] w} fileId] } {
+			close $fileId
+			return {}
+		}
+	} else {
+		set shouldContinue 1
+		if {[eof $fileId]} {
+			set shouldContinue 0
+		}
+		while {$shouldContinue} {
+			set currentRow(identifier) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(title) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(header) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(flags) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(reserved) [readNextField $fileId]
+			if {$shouldContinue} {
+				lappend metaData [array get currentRow]
+			}
+			gets $fileId
+			if { [eof $fileId] } {
+				set shouldContinue 0
+			}
+		}
+		close $fileId
+	}
+	return $metaData
+}
+
+proc readNextField {fileId} {
+	set padding ""
+	set padding " "
+	while {$padding != "\"" && $padding != ""} {
+		set padding [read $fileId 1]
+	}
+	return [readString $fileId]
+}
+
+proc readPasswords {{shouldForce 0}} {
+	global passwords
+	global passwordsRead
+	if {$passwordsRead && !$shouldForce} {
+		return
+	}
+	if { [catch {open [getPasswordFilename] r} fileId] } {
+		if { [catch {open [getPasswordFilename] w} fileId] } {
+			close $fileId
+			return {}
+		}
+	} else {
+		set shouldContinue 1
+		if {[eof $fileId]} {
+			set shouldContinue 0
+		}
+		while {$shouldContinue} {
+			set currentRow(login) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(password) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(flags) [readNextField $fileId]
+			if {[eof $fileId]} {
+				set shouldContinue 0
+			}
+			set currentRow(reserved) [readNextField $fileId]
+			if {$shouldContinue} {
+				lappend passwords [array get currentRow]
+			}
+			gets $fileId
+			if { [eof $fileId] } {
+				set shouldContinue 0
+			}
+		}
+		close $fileId
+		set passwordsRead 1
+	}
+}
+
+# When a file with pickled strings has been opened, and the opening quotation
+# mark for a string has been encountered, read from the stream until the
+# closing quotation mark has been encountered.  '\' escapes the next character;
+# this behavior is simplified from usual escape quotation.
+proc readString {fileId} {
+	set shouldContinue 1
+	set result ""
+	while {$shouldContinue} {
+		set currentCharacter [read $fileId 1]
+		switch -exact -- $currentCharacter {
+			"" {
+				set shouldContinue 0
+			}
+			"\"" {
+				set shouldContinue 0
+			}
+			"\\" {
+				set result "$result[read $fileId 1]"
+			}
+			default {
+				set result "$result$currentCharacter"
+			}
+		}
+	}
+	return $result
+}
+
+proc readTopic {filename} {
+	global topics
+	set result {}
+	set fullFilename "[getFilePrefix]/users/[getUserName]/$filename"
+	if { [catch {open $fullFilename r} fileId] } {
+		logMessage "Couldn't open file $fullFilename. Exiting from readTopic..."
+		panic
+	} else {
+		set shouldContinue 1
+		while {$shouldContinue} {
+			set currentField [readNextField $fileId]
+			if {[string length $currentField] > 0} {
+				lappend result $currentField
+			}
+			gets $fileId
+			if { [eof $fileId] } {
+				set shouldContinue 0
+			}
+		}
+		close $fileId
+	}
+	return $result
+}
+
+proc releaseLock {filename} {
+	file delete "$filename.lock"
+}
+
+# Hasn't fully been debugged.  Could be overprotective.
+proc removeShellMetacharacters {untrusted} {
+	set result "$untrusted"
+	regsub -all \[\!\\\$\^\\\&\\\*\(\)\~\\\[\\\]\\\\\|\{\}\`\"\'\;\<\>\?\#\]\
+		$result "" result
+	return $result
+}
+
+proc retrievePassword {} {
+	set login [CGIValue login]
+	if { [isValidLogin $login ] } {
+		set password [getPassword $login]
+		if { [catch {open "| [getMailerCommand $login]" r+} pipeId] } {
+			puts -nonewline "<p>We're sorry, but we weren't able to mail you\
+				your password.  Please contact the <a\
+				href=\"mailto:[getServerAdminEmail]\">administrator</a> and\
+				inform him of the problem.</p>\n"
+		} else {
+			puts -nonewline $pipeId "From: Snippets <[getServerAdminEmail]>\
+				\nTo: $login\
+				\nSubject: Your Snippets password\
+				\n\nDear Snippets Visitor;\
+				\n\nYour snippets password at [getFullBaseURL]\
+				\nis \"$password\".  (Your login is the e-mail address you\
+				used, \n\"$login\".)  We look forward to having you back.\
+				\n\
+				\n\
+				\nSincerely (for a computer program),\
+				\nSnippets\n"
+			close $pipeId
+			#if { [ catch {close $pipeId} ] } {
+				#puts -nonewline "<p>We're sorry, but we weren't able to mail\
+					#you your password.  Please contact the <a\
+					#href=\"mailto:[getServerAdminEmail]\">administrator</a>\
+					#and inform him of the problem.</p>\n"
+			#} else {
+			puts -nonewline "<p>Your password has been e-mailed to you and\
+				should arrive shortly.  When it does, you should be able\
+				to log in:</p>\n"
+			displayLogin
+			#}
+			#logMessage "$::errorInfo"
+		}
+	} else {
+		puts -nonewline "<p>We're sorry, but we were unable to look up your\	
+			account name.  You might have made a minor typo, or have an\
+			account with a different server that looks like this one.  Would\
+			you like to try to log in again?</p>\n"
+		displayLogin
+		pageEnd
+		exit 0
+	}
+}
+
+proc revokeAdministrativePriveleges {userId} {
+	global administrativeActionResult
+	if {[clearUserFlag "$userId" "administrator"]} {
+		set administrativeActionResult "<p><strong>User $userId\
+			has been had administrative priveleges revoked.</strong></p>\n"
+	} else {
+		set administrativeActionResult "<p><strong>There was an error\
+			attempting to revoke administrative priveleges for\
+			$userId.</strong></p>\n"
+	}
+}
+
+proc sanitizePotentialFilenameElement {untrusted} {
+	set result $untrusted
+	regsub -all "/" $result "" result
+	regsub -all "\n" $result "" result
+	return $result
+}
+
+proc saveSubmittedChanges {} {
+	global metaData
+	getLock [getMetaDataFilename]
+	readMetaData 1
+	set previous [CGIValue previousPageMode]
+	set topic [CGIValue topic]
+	getLock "[getFilePrefix]/users/[getUserName]/$topic"
+	set topicContents [readTopic $topic]
+	foreach key [CGIKeys] {
+		switch -regexp $key {
+			{^title_(.*)$} {
+				regexp {^(.*?)_(.*)$} $key match prefix id
+				set index 0
+				set shouldContinue 1
+				while {$shouldContinue} {
+					if {$index >= [llength $metaData]} {
+						set shouldContinue 0
+					} else {
+						array set current [lindex $metaData $index]
+						if {$current(identifier) == $id} {
+							set current(title) [CGIValue $key]
+							set metaData [lreplace $metaData $index\
+								$index [array get current]]
+						}
+					}
+					incr index
+				}
+			}
+			{^header_(.*)$} {
+				regexp {^(.*?)_(.*)$} $key match prefix id
+				set index 0
+				set shouldContinue 1
+				while {$shouldContinue} {
+					if {$index >= [llength $metaData]} {
+						set shouldContinue 0
+					} else {
+						array set current [lindex $metaData $index]
+						if {$current(identifier) == $id} {
+							set current(header) [CGIValue $key]
+							set metaData [lreplace $metaData $index\
+								$index [array get current]]
+						}
+					}
+					incr index
+				}
+			}
+			{^value_(.*)_(.*?)$} {
+				regexp {^(.*?)_(.*)_(.*?)$} $key match prefix id position
+				if { [CGIValue $key] != ""} {
+					if {$position < [llength $topicContents]} {
+						set topicContents [lreplace $topicContents $position\
+							$position [CGIValue $key]]
+					} else {
+						lappend topicContents [CGIValue $key]
+					}
+				} else {
+					if {$position < [llength $topicContents]} {
+						set topicContents [lreplace $topicContents $position\
+							$position [getDeletionMarker]]
+					}
+				}
+			}
+			{^delete_(.*)$} {
+				regexp {^(.*?)_(.*)_(.*?)$} $key match prefix id sequence
+				set topicContents [lreplace $topicContents $position\
+					$position [getDeletionMarker]]
+			}
+		}
+	}
+	for {set index 0} {$index < [llength $topicContents]} {} {
+		if { [lindex $topicContents $index] == [getDeletionMarker]} {
+			set topicContents [lreplace $topicContents $index $index]
+		} else {
+			incr index
+		}
+	}
+	releaseLock "[getFilePrefix]/users/[getUserName]/$topic"
+	writeMetaData
+	writeTopic $topic $topicContents
+	releaseLock [getMetaDataFilename]
+}
+
+proc selectSnippet {topic} {
+	set topicContents [readTopic $topic]
+	set topicIndex [expr int( rand() * [llength $topicContents] ) ]
+	return [lindex $topicContents $topicIndex]
+}
+
+proc setFlag {target flag} {
+	if {[regexp -- "$flag" "$target"]} {
+	} else {
+		set target "$target $flag"
+		regsub -all {\s+} $target { } target
+	}
+	return $target
+}
+
+proc setUserFlag {userId flag} {
+	global passwords
+	getLock [getPasswordFilename]
+	readPasswords
+	if {[userExists $userId]} {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $passwords $index]
+			if {$index >= [llength $passwords]} {
+				set shouldContinue 0
+			} else {
+				if {$currentRow(login) == $userId} {
+					set currentRow(flags) [setFlag "$currentRow(flags)"\
+						"$flag"]
+					set passwords [lreplace $passwords $index $index [array\
+						get currentRow]]
+					writePasswords
+					releaseLock [getPasswordFilename]
+					return 1
+				}
+			}
+			incr index
+		}
+	}
+	releaseLock [getPasswordFilename]
+	return 0
+}
+
+proc shouldAllowGuestAccess {} {
+	return [isAllowed "shouldAllowGuestAccess"]
+}
+
+proc shouldAllowHtmlSnippets {} {
+	return [isAllowed "shouldAllowHtmlSnippets" 1]
+}
+
+proc shouldAllowLoginAccess {} {
+	return [isAllowed "shouldAllowLoginAccess"]
+}
+
+proc shouldAllowLoginCreation {} {
+	return [isAllowed "shouldAllowLoginCreation"]
+}
+
+proc shouldAllowWikiAccess {} {
+	return [isAllowed "shouldAllowWikiAccess"]
+}
+
+proc shouldAuthenticate {} {
+	switch -- [getPageMode] {
+		connect -
+		createLogin -
+		entryMenu -
+		retrievePassword {
+			return 0
+		}
+		default {
+			return 1
+		}
+	}
+}
+
+proc show {id} {
+	global metaData
+	for {set index 0} {$index < [llength $metaData]} {incr index} {
+		array set current [lindex $metaData $index]
+		if {$current(identifier) == $id} {
+			set current(flags) [clearFlag "$current(flags)" "hide"]
+			set current(flags) [setFlag "$current(flags)" "show"]
+			set metaData [lreplace $metaData $index $index [array get current]]
+		}
+	}
+	writeMetaData
+}
+
+proc showSnippets {} {
+	foreach {topic} [getTopics] {
+		if {[isActive $topic]} {
+			printTopicName $topic
+			printHeader $topic
+			printSnippet $topic
+		}
+	}
+}
+
+proc showTemplates {} {
+	if {[userExists template]} {
+		set templateMetaData [readUserMetaData template]
+		puts -nonewline "<strong>"
+		if {[llength $templateMetaData] > 0} {
+			set shouldAddBreak 0
+			foreach current $templateMetaData {
+				array set currentRow $current
+				if {![topicExists $currentRow(identifier)]} {
+					if {$shouldAddBreak} {
+						puts -nonewline "<br>\n"
+					}
+					puts -nonewline "<input type=\"checkbox\"\
+						name=\"importtemplate_$currentRow(identifier)\">\
+						$currentRow(title)"
+					set shouldAddBreak 1
+				}
+			}
+		}
+		puts -nonewline "</strong>"
+	}
+}
+
+proc testFlag {target flags} {
+	if {[regexp -- "$flags" "$target"]} {
+		return 1
+	} else {
+		return 0
+	}
+}
+
+proc testUserFlag {userId flag} {
+	global passwords
+	if {[userExists $userId]} {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $passwords $index]
+			if {$index >= [llength $passwords]} {
+				set shouldContinue 0
+			} else {
+				if {$currentRow(login) == $userId} {
+					if {[regexp -- "$flag" "$currentRow(flags)"]} {
+						return 1
+					} else {
+						return 0
+					}
+				}
+			}
+			incr index
+		}
+	}
+	return 0
+}
+
+proc textToHtml {text} {
+	return [lineBreaksToHtml [quoteHtmlMetacharacters $text]]
+}
+
+proc topicExists {topicId} {
+	global metaData
+	set index 0
+	set shouldContinue 1
+	readMetaData
+	while {$shouldContinue} {
+		if {$index >= [llength $metaData]} {
+			set shouldContinue 0
+		} else {
+			array set currentRow [lindex $metaData $index]
+			if {$currentRow(identifier) == $topicId} {
+				return 1
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc userExists {login} {
+	global passwords
+	set index 0
+	set shouldContinue 1
+	while {$shouldContinue} {
+		if {$index >= [llength $passwords]} {
+			set shouldContinue 0
+		} else {
+			array set currentRow [lindex $passwords $index]
+			if {$currentRow(login) == $login} {
+				return 1
+			}
+		}
+		incr index
+	}
+	return 0
+}
+
+proc welcomeScreen {login password} {
+	puts -nonewline "<input type=\"hidden\" name=\"login\" value=\"$login\">\n\
+		<input type=\"hidden\" name=\"password\" value=\"$password\">\n"
+	readFile [concat [getFilePrefix]/general/welcome]
+	if {[userExists "template"]} {
+		puts -nonewline "<p>You may, if you are interested, include\
+			existing snippet collections in your account--you are free to\
+			adjust them, if you do so.  Please check what you are\
+			interested in:</p>\n<p>"
+		showTemplates
+		puts -nonewline "</p>"
+	}
+	puts -nonewline "<p><input type=\"hidden\" name=\"pageMode\"\
+		value=\"snippets\">\n\
+		<input type=\"hidden\" name=\"shouldAddTemplates\" value=\"yes\">\n\
+		<input type=\"image\" name=\"Continue\"\ border=\"0\"
+		src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+		#<input type=\"submit\" value=\"Continue\"></p>\n"
+	# Possibly add includable topics.
+	#puts -nonewline "<p><input type=\"radio\" name=\"pageMode\"\
+		#value=\"metaSnippet\" onclick=\"document.snippets.submit()\" checked>\
+		#Edit the snippets<br>\n\
+		#<input type=\"submit\" value=\"Go!\">"
+}
+
+proc writeMetaData {} {
+	global metaData
+	if { [catch {open [getMetaDataFilename] w} fileId] } {
+		logMessage "Couldn't open file [getMetaDataFilename]. Exiting from writeMetaData..."
+		panic
+	} else {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $metaData $index]
+			if {$index >= [llength $metaData]} {
+				set shouldContinue 0
+			} else {
+				writeString $fileId $currentRow(identifier)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(title)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(header)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(flags)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(reserved)
+				puts $fileId ""
+			}
+			incr index
+		}
+		close $fileId
+	}
+}
+
+proc writePasswords {} {
+	global passwords
+	if { [catch {open [getPasswordFilename] w} fileId] } {
+		logMessage "Couldn't open file [getPasswordFilename]. Exiting from writePasswords..."
+		panic
+	} else {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			array set currentRow [lindex $passwords $index]
+			if {$index >= [llength $passwords]} {
+				set shouldContinue 0
+			} else {
+				writeString $fileId $currentRow(login)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(password)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(flags)
+				puts -nonewline $fileId " "
+				writeString $fileId $currentRow(reserved)
+				puts $fileId ""
+			}
+			incr index
+		}
+		close $fileId
+	}
+}
+
+# Write a string, delineated by '"' and with '\' as the quote character.
+proc writeString {fileId toRecord} {
+	puts -nonewline $fileId "\""
+	for {set i 0} {$i < [string length $toRecord]} {incr i} {
+		switch -exact -- [string range $toRecord $i $i] {
+			"\"" -
+			"\\" {
+				puts -nonewline $fileId "\\"
+				puts -nonewline $fileId [string range $toRecord $i $i]
+			}
+			default {
+				puts -nonewline $fileId [string range $toRecord $i $i]
+			}
+		}
+	}
+	puts -nonewline $fileId "\""
+}
+
+proc writeTopic {topicID topicContents} {
+	if { [catch {open "[getSnippetFilename $topicID]" w} fileId] } {
+		logMessage "Couldn't open file for writing.  Exiting from writeTopic..."
+		panic
+	} else {
+		set index 0
+		set shouldContinue 1
+		while {$shouldContinue} {
+			if {$index >= [llength $topicContents]} {
+				set shouldContinue 0
+			} else {
+				set current [lindex $topicContents $index]
+				writeString $fileId $current
+				puts $fileId ""
+			}
+			incr index
+		}
+		close $fileId
+	}
+}
+
+#
+# Script body
+#
+
+init
+pageStart
+
+switch -exact [getPageMode] {
+	"accountManagement" {
+		if {[authenticate]} {
+			puts -nonewline "<input type=\"hidden\" name=\"pageMode\"\
+				value=\"accountManagement\">\n\
+				<h2>Account Management</h2>\n\
+				<p><strong>On this form, radio buttons (used for selection) do\
+				not submit by themselves.  You will need to press the submit\
+				button at the bottom of the screen.</strong></p>\n"
+			if {[info exists accountManagementResult]} {
+				puts -nonewline "<font\
+					size=\"+1\">$accountManagementResult</font>"
+			}
+			puts -nonewline "<p><input type=\"radio\"\
+				name=\"accountManagement\" value=\"changePassword\">\
+				Change your password.<br>\n\
+				Old password:<br>\n\
+				<input type=\"password\" name=\"changePasswordOld\"\
+				size=\"[getTextWidth]\"><br>\n\
+				New password:<br>\n\
+				<input type=\"password\" name=\"changePasswordNew\"\
+				size=\"[getTextWidth]\"><br>\n\
+				Repeat new password:<br>\n\
+				<input type=\"password\" name=\"changePasswordDuplicate\"\
+				size=\"[getTextWidth]\"></p>\n"
+				#<p><input type=\"radio\"\
+				#name=\"accountManagement\" value=\"updateHtmlPreference\">\
+				#Change your HTML editing preference.<br>\n\
+				#<input type=\"checkbox\" name=\"prefersToUseHtml\""
+			#if {[testUserFlag [getUserName] html]} {
+				#puts -nonewline "checked"
+			#}
+			#puts -nonewline ">\
+				#I know HTML and would like to use it when I edit\
+				#snippets.</p>\n"
+			puts -nonewline "\
+				<p><input type=\"hidden\" name=\"shouldAddTemplates\"\
+				value=\"yes\">\n\
+				<input type=\"radio\" name=\"accountManagement\"\
+				value=\"addTemplates\"> Add new topics to my account.\
+				Topics available:<br>\n"
+			showTemplates
+			puts -nonewline "</p>\n"
+			puts -nonewline "\
+				<p><input type=\"radio\" name=\"accountManagement\"\
+				value=\"returnToSnippets\" checked>\
+				Return to reading snippets.</p>\n\
+				<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+				src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+				#<p><input type=\"submit\" value=\"Go!\"></p>\n"
+		}
+	}
+	"administrative" {
+		if {[isAdministrator [getUserName]]} {
+			puts -nonewline "<input type=\"hidden\" name=\"pageMode\"\
+				value=\"administrativeAction\">\n\
+				<h2>Administrative Utilities</h2>\n\
+				<p><strong>On this form, radio buttons (used for selection) do\
+				not submit by themselves.  You will need to press the submit\
+				button at the bottom of the screen.</strong></p>\n"
+			if {[info exists administrativeActionResult]} {
+				puts -nonewline "<font\
+					size=\"+1\">$administrativeActionResult</font>"
+			}
+			puts -nonewline "<p>These options complement the controls\
+				available from the configuration file.</p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"addUser\"> Add a new user to the system.<br>\n\
+				E-mail address:<br>\n
+				<input type=\"text\" name=\"newUserId\"\
+				size=\"[getTextWidth]\"><br>\n
+				Password:<br>\n\
+				<input type=\"password\" name=\"newUserPassword\"\
+				size=\"[getTextWidth]\"><br>
+				Repeat password:<br>\n\
+				<input type=\"password\" name=\"newUserPasswordDuplicate\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"switchUser\"> Switch to a different user (switch to\
+				user 'guest' to edit what a guest sees).<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\" name=\"switchUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"changeUserPassword\"> Change a user's password.<br>\n\
+				User's e-mail address:<br>\n\
+				<input type=\"text\" name=\"changeUserPasswordEmail\"\
+				size=\"[getTextWidth]\"><br>\n\
+				New password:<br>\n\
+				<input type=\"password\" name=\"changeUserPasswordPassword\"\
+				size=\"[getTextWidth]\"><br>\n\
+				Repeat new password:<br>\n\
+				<input type=\"password\" name=\"changeUserPasswordDuplicate\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"setUserToTextOnly\"> Set user to text-only access (no
+				working HTML in displayed snippets).<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\" name=\"setUserToTextOnlyUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"resetUserFromTextOnly\"> Remove a text-only access
+				restriction from a given user.<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\" name=\"resetUserFromTextOnlyUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"lockUser\">Lock user account<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\"\ name=\"lockUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"unlockUser\">Unlock user account<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\"\ name=\"unlockUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"grantAdministrativePriveleges\"> Grant administrative\
+				priveleges<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\"\
+				name=\"grantAdministrativePrivelegesUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"revokeAdministrativePriveleges\"> Revoke administrative\
+				priveleges<br>\n\
+				E-mail address:<br>\n\
+				<input type=\"text\"\
+				name=\"revokeAdministrativePrivelegesUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"deleteUser\"> DELETE an existing user.<br>\n\
+				User's e-mail address:<br>\n\
+				<input type=\"text\" name=\"deleteUserId\"\
+				size=\"[getTextWidth]\"></p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"listUsers\"> List users</p>\n\
+				<p><input type=\"radio\" name=\"administrativeAction\"\
+				value=\"returnToSnippets\" checked> Return to snippets</p>\n\
+				<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+				src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+		} else {
+			puts -nonewline "<p>We're sorry, but this option requires\
+				administrative priveleges, and your account does not presently\
+				have them.</p>\n\
+				<input type=\"hidden\" name=\"pageMode\"\
+				value=\"snippets\">\n\
+				<p><input type=\"image\" name=\"Return to snippets\"\
+				border=\"0\"\
+				src=\"[getDocumentURL]/return_to_snippets.jpg\"></p>\n"
+		}
+	}
+	"connect" {
+		puts -nonewline "<input type=\"hidden\" name=\"accessMethod\"\
+			value=\"[CGIValue accessMethod]\">\n"
+		switch -exact [CGIValue accessMethod] {
+			"guest" {
+				if {[shouldAllowGuestAccess]} {
+					showSnippets
+					puts -nonewline "<input type=\"hidden\" name=\"pageMode\"\
+						value=\"connect\">\n"
+					puts -nonewline "<p><input type=\"image\"\ border=\"0\"
+						name=\"Show another page\"
+						src=\"[getDocumentURL]/show_another_page.jpg\"></p>"
+				} else {
+					accessError
+				}
+			}
+			"wiki" {
+				if {[shouldAllowWikiAccess]} {
+					puts -nonewline "<input type=\"hidden\" name=\"login\"\
+						value=\"wiki\">\n"
+					showSnippets
+					displayStandardChoices
+				} else {
+					accessError
+				}
+			}
+			"login" {
+				if {[shouldAllowLoginAccess]} {
+					displayLogin
+				} else {
+					accessError
+				}
+			}
+			"createLogin" {
+				if {[shouldAllowLoginCreation]} {
+					displayCreateLogin
+				} else {
+					accessError
+				}
+			}
+			"forgotPassword" {
+				if {[shouldAllowLoginAccess]} {
+					forgotPassword
+				} else {
+					accessError
+				}
+			}
+		}
+	}
+	"createLogin" {
+		createLogin
+	}
+	"entryMenu" {
+		puts -nonewline "<input type=\"hidden\" name=\"pageMode\"\
+			value=\"connect\">\n"
+		puts -nonewline "<h2>Welcome</h2>\n\
+			<p>Choose from the following ways of using Snippets:</p>"
+		set isAccessAvailable 0
+		if {[shouldAllowGuestAccess]} {
+			puts -nonewline "<input type=\"radio\" name=\"accessMethod\"\
+				value=\"guest\"\
+				onclick=\"document.snippets.submit()\""
+			if {[getDefaultAccessMethod] == "guest"} {
+				puts -nonewline " checked"
+			}
+			puts -nonewline "> Guest<br>\n"
+			set isAccessAvailable 1
+		}
+		if {[shouldAllowWikiAccess]} {
+			puts -nonewline "<input type=\"radio\" name=\"accessMethod\"\
+				value=\"wiki\"\
+				onclick=\"document.snippets.submit()\""
+			if {[getDefaultAccessMethod] == "wiki"} {
+				puts -nonewline " checked"
+			}
+			puts -nonewline "> Wiki<br>\n"
+			set isAccessAvailable 1
+		}
+		if {[shouldAllowLoginAccess]} {
+			puts -nonewline "
+				<input type=\"radio\" name=\"accessMethod\" value=\"login\"\
+				onclick=\"document.snippets.submit()\""
+			if {[getDefaultAccessMethod] == "login"} {
+				puts -nonewline " checked"
+			}
+			puts -nonewline "> Log in as registered user<br>\n"
+			if {[shouldAllowLoginCreation]} {
+				puts -nonewline "<input type=\"radio\" name=\"accessMethod\"\
+					value=\"createLogin\"\
+					onclick=\"document.snippets.submit()\">\
+					Create new account.<br>\n"
+			}
+			puts -nonewline "<input type=\"radio\" name=\"accessMethod\"\
+				value=\"forgotPassword\"\
+				onclick=\"document.snippets.submit()\">\
+				Help! I forgot my password.<br>\n"
+			set isAccessAvailable 1
+		}
+		if {$isAccessAvailable} {
+			puts -nonewline "<p><input type=\"image\" name=\"Go!\"\
+				border=\"0\"
+				src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+		} else {
+			puts -nonewline "<p>Hmm...  The people in charge of this snippets\
+				page have set it up, but haven't given any way for people to\
+				use it.  You might want to e-mail them and let them know it\
+				won't let anyone in.</p>\n"
+		}
+	}
+	"listUsers" {
+		if {[isAdministrator [getUserName]]} {
+			listUsers
+		}
+	}
+	"snippets" {
+		if {[authenticate]} {
+			showSnippets
+			displayStandardChoices
+		}
+	}
+	"metaSnippet" {
+		if {[authenticate]} {
+			switch -exact $editCommand {
+				moveup {
+					moveUp $actionObject
+				}
+				movedown {
+					moveDown $actionObject
+				}
+				hide {
+					hide $actionObject
+				}
+				show {
+					show $actionObject
+				}
+				"" {
+				}
+			}
+			puts "<input type=\"hidden\" name=\"pageMode\" \
+				value=\"metaSnippetAction\">"
+			puts "<p>Select an action:</p>"
+			set topicNumber 0
+			foreach {topic} [getTopics] {
+				printTopicName $topic
+				puts -nonewline "<p>"
+				puts "<input type=\"radio\" name=\"action\"\
+					value=\"edittopic_$topic\"\
+					onclick=\"document.snippets.submit()\"\
+					>\
+					Edit topic &nbsp; "
+				if {[isActive $topic]} {
+					puts "<input type=\"radio\" name=\"action\"\
+						value=\"hide_$topic\"\
+						onclick=\"document.snippets.submit()\"\
+						>\
+						Hide &nbsp; "
+				} else {
+					puts "<input type=\"radio\" name=\"action\"\
+						value=\"show_$topic\"\
+						onclick=\"document.snippets.submit()\"\
+						>\
+						Show &nbsp; "
+				}
+				if {$topicNumber > 0} {
+					puts "<input type=\"radio\" name=\"action\"\
+						value=\"moveup_$topic\"\
+						onclick=\"document.snippets.submit()\"\
+						>\
+						Move up &nbsp; "
+				}
+				if {$topicNumber < [expr [getNumberOfTopics] - 1]} {
+					puts "<input type=\"radio\" name=\"action\"\
+						value=\"movedown_$topic\"\
+						onclick=\"document.snippets.submit()\"\
+						>\
+						Move down &nbsp; "
+				}
+				puts -nonewline "</p>\n"
+				incr topicNumber
+			}
+			puts "<hr>"
+			#if {[isAdministrator [getUserName]]} {
+					#onclick=\"document.snippets.submit()\"\
+					#> Use administrative tools.<br>"
+			#}
+			puts "<p><input type=\"radio\" name=\"action\" value=\"newTopic\"\
+				onclick=\"document.snippets.submit()\"\
+				>\n\
+				Create new topic<br>\n\
+				<input type=\"radio\" name=\"action\" value=\"snippet\"\n\
+				checked\
+				onclick=\"document.snippets.submit()\"\
+				> Return to the viewing page</p>\n\
+				<p><input type=\"image\" name=\"Go!\"\ border=\"0\"
+				src=\"[getDocumentURL]/submit.jpg\"></p>\n"
+				#<input type=\"submit\" value=\"Go!\">"
+			}
+		}
+	"editTopic" {
+		if {[authenticate]} {
+			editTopic $actionObject
+		}
+	}
+	"newTopic" {
+		if {[authenticate]} {
+			editTopic [createTopic]
+		}
+	}
+	"retrievePassword" {
+		retrievePassword
+	}
+}
+
+pageEnd
